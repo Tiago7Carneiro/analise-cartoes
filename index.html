@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-<!-- saved from url=(0055)file:///C:/Users/tiago/Downloads/gestor-cartoes-v2.html -->
 <html lang="pt-BR"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -309,7 +308,7 @@ const CATEGORIAS = [
   {group:'Carro', items:['Gasolina','Manutenção','Outros']},
   {group:'Pessoal', items:['Tiago','Danielle','Henrique','Lia Rosa']},
   {group:'Saúde', items:['Farmácia','Exames e Vac.']},
-  {group:'Outros', items:['Casa','Lazer','Educação','Presentes','Uber','Passagens','Streaming','Anuidades','Empréstimos']},
+  {group:'Outros', items:['Casa','Lazer','Educação','Presentes','Uber','Passagens','Streaming','Anuidades','Empréstimos','Parcelamento de Fatura']},
   {group:'Loja', items:['iGUi (reembolso)','Loja Antiga']},
 ];
 
@@ -336,7 +335,7 @@ function getFaturaKey(ck, compraData, parcela) {
   const c = CARTOES[ck], d = new Date(compraData+'T12:00:00');
   const fecha = getFechaDate(ck, compraData);
   let m = d.getMonth(), y = d.getFullYear();
-  if(d > fecha) { m++; if(m>11){m=0;y++;} }
+  if(d >= fecha) { m++; if(m>11){m=0;y++;} }
   m += (parcela-1); y += Math.floor(m/12); m = m%12;
   return `${y}-${String(m+1).padStart(2,'0')}`;
 }
@@ -478,6 +477,8 @@ function renderLancar() {
     <select id="f-cat">${catOpts}</select>
     <label class="field-label">Titular</label>
     <select id="f-tit">${TITULARES.map(t=>`<option value="${t}" ${g&&g.titular===t?'selected':''}>${t}</option>`).join('')}</select>
+    <label class="field-label">Como aparece na fatura do banco</label>
+    <input type="text" id="f-fatura" placeholder="Ex: RIO ROUTE 164, PGZ*AGUAAZULP..." value="${g?g.nomeFatura||'':''}">
     <label class="field-label">Observação</label>
     <input type="text" id="f-obs" placeholder="Detalhe opcional..." value="${g?g.obs||'':''}">
     <button class="btn btn-primary" onclick="salvarGasto()">${g?'Salvar alterações':'Registrar gasto'}</button>
@@ -522,10 +523,11 @@ function salvarGasto() {
   const categoria = document.getElementById('f-cat')?.value;
   const titular = document.getElementById('f-tit')?.value;
   const obs = document.getElementById('f-obs')?.value.trim();
+  const nomeFatura = document.getElementById('f-fatura')?.value.trim();
 
   if(!data||!cartao||!desc||!valor) { showToast('Preencha os campos obrigatórios'); return; }
 
-  const gasto = {id:editId||uid(),data,cartao,desc,valor,parcelas,categoria,titular,obs,criadoEm:new Date().toISOString()};
+  const gasto = {id:editId||uid(),data,cartao,desc,valor,parcelas,categoria,titular,obs,nomeFatura,criadoEm:new Date().toISOString()};
   if(editId) { D.gastos = D.gastos.map(g=>g.id===editId?gasto:g); showToast('Atualizado!'); }
   else { D.gastos.push(gasto); showToast('Registrado!'); }
   save();
@@ -592,6 +594,7 @@ function gastoItemHTML(g, compact) {
       <div class="gasto-desc">${g.desc}</div>
       <div class="gasto-meta">${fmtD(g.data)} · ${c.emoji||''} ${c.nome||g.cartao}${parc}</div>
       <div class="gasto-meta">${g.categoria}${g.titular?' · '+g.titular:''}${g.obs?' · '+g.obs:''}</div>
+      ${g.nomeFatura?`<div class="gasto-meta" style="color:var(--text3);font-size:11px">🧾 Na fatura: ${g.nomeFatura}</div>`:''}
       <div class="gasto-tags">
         ${igui?'<span class="badge badge-green">iGUi</span>':''}
         ${antiga?'<span class="badge badge-amber">loja antiga</span>':''}
@@ -739,7 +742,7 @@ function copiar(tipo) {
     txt=`GESTOR DE CARTÕES — TODOS OS GASTOS\nExportado: ${new Date().toLocaleString('pt-BR')}\n\n`;
     D.gastos.sort((a,b)=>a.data.localeCompare(b.data)).forEach(g=>{
       const c=CARTOES[g.cartao]||{};
-      txt+=`${fmtD(g.data)} | ${c.nome} | ${g.desc} | ${R(g.valor)} | ${g.parcelas}x | ${g.categoria} | ${g.titular}${g.obs?' | '+g.obs:''}\n`;
+      txt+=`${fmtD(g.data)} | ${c.nome} | ${g.desc}${g.nomeFatura?' (fatura: '+g.nomeFatura+')':''} | ${R(g.valor)} | ${g.parcelas}x | ${g.categoria} | ${g.titular}${g.obs?' | '+g.obs:''}\n`;
     });
     txt+=`\nTOTAL: ${R(D.gastos.reduce((s,g)=>s+Number(g.valor),0))}`;
   } else if(tipo==='igui') {
