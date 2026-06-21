@@ -109,6 +109,7 @@
   .btn { padding: 15px; border-radius: var(--radius-sm); border: none; font-size: 16px; font-family: inherit; font-weight: 600; cursor: pointer; width: 100%; margin-top: 16px; }
   .btn-primary { background: var(--text); color: var(--bg); }
   .btn-secondary { background: var(--surface2); color: var(--text2); border: 1px solid var(--border); }
+  .btn-accent { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue); font-weight:600; }
   .btn-danger { background: var(--red-bg); color: var(--red); }
   
   /* Badge */
@@ -286,6 +287,10 @@
   <div class="dialog">
     <h3 id="dlg-title"></h3>
     <p id="dlg-msg"></p>
+    <div id="dlg-confirm-wrap" style="display:none;margin-bottom:14px">
+      <label class="field-label" style="margin-top:0">Digite <strong id="dlg-confirm-word"></strong> para confirmar</label>
+      <input type="text" id="dlg-confirm-input" autocapitalize="characters" autocomplete="off">
+    </div>
     <div class="dialog-btns">
       <button onclick="dlgCancel()" style="background:var(--surface2);color:var(--text2)">Cancelar</button>
       <button id="dlg-ok" style="background:var(--red-bg);color:var(--red)">Remover</button>
@@ -322,18 +327,81 @@ const save = () => { try { localStorage.setItem(KEY, JSON.stringify(D)); } catch
 const R = (v,d=2) => Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:d,maximumFractionDigits:d});
 const fmtD = s => s ? s.split('-').reverse().join('/') : '';
 const uid = () => Date.now().toString(36)+Math.random().toString(36).substr(2,5);
+
+// Máscara de moeda BR: digita só números, formata como 0,00 / 1.234,56 automaticamente
+function maskMoeda(input) {
+  let v = input.value.replace(/\D/g,''); // só dígitos
+  if (!v) { input.value=''; return; }
+  v = v.replace(/^0+(?=\d)/,''); // remove zeros à esquerda
+  while (v.length < 3) v = '0'+v;
+  const centavos = v.slice(-2);
+  let inteiro = v.slice(0,-2).replace(/^0+(?=\d)/,'') || '0';
+  inteiro = inteiro.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  input.value = `${inteiro},${centavos}`;
+}
+// Converte "1.234,56" -> 1234.56 (number)
+function parseMoeda(str) {
+  if (!str) return NaN;
+  return parseFloat(str.replace(/\./g,'').replace(',','.'));
+}
 const hoje = () => new Date().toISOString().split('T')[0];
 const mesAtual = () => { const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; };
 
+// Retorna a fatura "em aberto" de um cartão específico: a próxima que ainda vai vencer.
+// Se já passou o vencimento deste mês, a fatura em aberto passa a ser a do mês seguinte.
+function getFaturaAbertaCartao(ck) {
+  const c = CARTOES[ck];
+  const hoje = new Date();
+  hoje.setHours(0,0,0,0);
+  let vencData = new Date(hoje.getFullYear(), hoje.getMonth(), c.venc);
+  if (hoje > vencData) {
+    vencData = new Date(hoje.getFullYear(), hoje.getMonth()+1, c.venc);
+  }
+  const y = vencData.getFullYear(), m = vencData.getMonth();
+  // A fatura referente a esse vencimento é identificada pelo mesmo mês/ano do vencimento,
+  // pois getFaturaKey usa o mês de vencimento como chave (ver getFaturaKey).
+  return `${y}-${String(m+1).padStart(2,'0')}`;
+}
+
+function addMonths(year, month, n) {
+  // month é 0-indexed; retorna {y,m} já normalizado
+  const total = month + n;
+  const y = year + Math.floor(total/12);
+  const m = ((total%12)+12)%12;
+  return {y,m};
+}
+
 function getFechaDate(ck, compraData) {
   const c = CARTOES[ck], d = new Date(compraData+'T12:00:00');
-  if(c.fechaDia) return new Date(d.getFullYear(), d.getMonth(), c.fechaDia, 12);
+  if(c.fechaDia) {
+    // Cartões com dia fixo de fechamento (ex: BB fecha dia 30).
+    // O fechamento relevante é o mais recente que seja <= à data da compra.
+    const candidatoMesmoMes = new Date(d.getFullYear(), d.getMonth(), c.fechaDia, 12);
+    if (d < candidatoMesmoMes) {
+      return new Date(d.getFullYear(), d.getMonth()-1, c.fechaDia, 12);
+    }
+    return candidatoMesmoMes;
+  }
   return new Date(d.getFullYear(), d.getMonth(), c.venc-7, 12);
 }
 
 function getFaturaKey(ck, compraData, parcela) {
   const c = CARTOES[ck], d = new Date(compraData+'T12:00:00');
   const fecha = getFechaDate(ck, compraData);
+
+  if (c.fechaDia) {
+    // Lógica dedicada para fechamento de dia fixo, com aritmética de mês segura
+    // (evita bugs de rollover em meses com 31 dias quando fechaDia=30).
+    let fy = fecha.getFullYear(), fm = fecha.getMonth();
+    if (d >= fecha) {
+      const adv = addMonths(fy, fm, 1);
+      fy = adv.y; fm = adv.m;
+    }
+    const venc = addMonths(fy, fm, 1 + (parcela-1));
+    return `${venc.y}-${String(venc.m+1).padStart(2,'0')}`;
+  }
+
+  // Cartões com fechamento "N dias antes do vencimento", dentro do mesmo mês
   let m = d.getMonth(), y = d.getFullYear();
   if(d >= fecha) { m++; if(m>11){m=0;y++;} }
   m += (parcela-1); y += Math.floor(m/12); m = m%12;
@@ -390,36 +458,46 @@ function goPageById(p) {
 
 // HOME
 function renderHome() {
-  const mes = mesAtual();
   const n = new Date();
   document.getElementById('header-mes').textContent = n.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
 
   let totalGeral=0, totalIgui=0;
-  Object.keys(CARTOES).forEach(k => { totalGeral += getTotaisFatura(k,mes).total; });
-  D.gastos.forEach(g => getParcelas(g).forEach(p => { if(p.fk===mes && g.categoria==='Loja - iGUi') totalIgui+=p.val; }));
+  Object.keys(CARTOES).forEach(k => {
+    const fk = getFaturaAbertaCartao(k);
+    totalGeral += getTotaisFatura(k,fk).total;
+  });
+  D.gastos.forEach(g => {
+    const fkCartao = getFaturaAbertaCartao(g.cartao);
+    getParcelas(g).forEach(p => { if(p.fk===fkCartao && g.categoria==='Loja - iGUi') totalIgui+=p.val; });
+  });
 
-  const c6Mes = getTotaisFatura('c6',mes).total;
+  const c6Fk = getFaturaAbertaCartao('c6');
+  const c6Mes = getTotaisFatura('c6',c6Fk).total;
   const c6Pct = Math.min(100,Math.round(c6Mes/10000*100));
-  const carrefourMes = D.gastos.filter(g => g.cartao==='carrefour' && getParcelas(g).some(p=>p.fk===mes&&p.num===1)).length;
+  const carrefourFk = getFaturaAbertaCartao('carrefour');
+  const carrefourMes = D.gastos.filter(g => g.cartao==='carrefour' && getParcelas(g).some(p=>p.fk===carrefourFk&&p.num===1)).length;
 
   // Alertas
   let alertas = '';
-  if(carrefourMes===0) alertas += `<div class="alert alert-warn">⚠️ Carrefour sem compras este mês — risco de anuidade.</div>`;
-  if(c6Pct<100) alertas += `<div class="alert ${c6Pct>70?'alert-warn':'alert-info'}">C6: faltam ${R(10000-c6Mes)} para isenção de anuidade (${c6Pct}%).</div>`;
+  if(carrefourMes===0) alertas += `<div class="alert alert-warn">⚠️ Carrefour sem compras na fatura aberta (${carrefourFk}) — risco de anuidade.</div>`;
+  if(c6Pct<100) alertas += `<div class="alert ${c6Pct>70?'alert-warn':'alert-info'}">C6: faltam ${R(10000-c6Mes)} para isenção de anuidade na fatura ${c6Fk} (${c6Pct}%).</div>`;
 
   // Cartões
   let cartoesHtml = '';
   Object.entries(CARTOES).forEach(([k,c]) => {
-    const {total} = getTotaisFatura(k,mes);
+    const fk = getFaturaAbertaCartao(k);
+    const {total} = getTotaisFatura(k,fk);
     let fd;
-    if(c.fechaDia) fd = new Date(n.getFullYear(),n.getMonth(),c.fechaDia);
-    else fd = new Date(n.getFullYear(),n.getMonth(),c.venc-7);
+    // Calcula a data de fechamento referente a essa fatura em aberto (mês anterior ao vencimento)
+    const [fy, fm] = fk.split('-').map(Number);
+    if(c.fechaDia) fd = new Date(fy, fm-1, c.fechaDia);
+    else fd = new Date(fy, fm-1, c.venc-7);
     const dias = Math.ceil((fd-n)/86400000);
     const fdStr = fd.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
     const urgente = dias>=0&&dias<=3;
     cartoesHtml += `<div class="cartao-row">
       <div><div class="cartao-nome">${c.emoji} ${c.nome}</div>
-      <div class="cartao-info">Fecha ${fdStr} · vence dia ${c.venc}</div>
+      <div class="cartao-info">Fatura ${fk} · fecha ${fdStr} · vence dia ${c.venc}</div>
       ${k==='c6'?`<div class="progress" style="width:120px;margin-top:4px"><div class="progress-fill" style="width:${c6Pct}%;background:${c6Pct>=100?'var(--green)':'var(--amber)'}"></div></div>`:''}
       </div>
       <div><div class="cartao-val">${R(total)}</div>
@@ -435,8 +513,8 @@ function renderHome() {
   document.getElementById('page-home').innerHTML = `
     ${alertas}
     <div class="metric-grid">
-      <div class="metric"><div class="m-label">Total fatura atual</div><div class="m-val">${R(totalGeral)}</div><div class="m-sub">${mes}</div></div>
-      <div class="metric"><div class="m-label">Reembolso iGUi</div><div class="m-val">${R(totalIgui)}</div><div class="m-sub">este mês</div></div>
+      <div class="metric"><div class="m-label">Total faturas em aberto</div><div class="m-val">${R(totalGeral)}</div><div class="m-sub">próximos vencimentos de cada cartão</div></div>
+      <div class="metric"><div class="m-label">Reembolso iGUi</div><div class="m-val">${R(totalIgui)}</div><div class="m-sub">faturas em aberto</div></div>
     </div>
     <div class="metric" style="margin-bottom:12px">
       <div class="m-label">C6 — meta anuidade</div>
@@ -469,7 +547,7 @@ function renderLancar() {
     <label class="field-label">Estabelecimento / descrição *</label>
     <input type="text" id="f-desc" placeholder="Ex: Posto Shell, Drogasil, iFood..." value="${g?g.desc:''}">
     <div class="field-row">
-      <div><label class="field-label">Valor total (R$) *</label><input type="number" id="f-valor" placeholder="0,00" step="0.01" min="0" value="${g?g.valor:''}"></div>
+      <div><label class="field-label">Valor total (R$) *</label><input type="text" inputmode="decimal" id="f-valor" placeholder="0,00" value="${g?R(g.valor):''}"></div>
       <div><label class="field-label">Parcelas</label><input type="number" id="f-parcelas" min="1" max="48" value="${g?g.parcelas:1}"></div>
     </div>
     <div id="preview-parc" class="preview-box" style="display:none"></div>
@@ -487,17 +565,21 @@ function renderLancar() {
 
   if(g) { document.getElementById('f-cat').value = g.categoria; }
 
-  ['f-data','f-cartao','f-valor','f-parcelas'].forEach(id => {
+  ['f-data','f-cartao','f-parcelas'].forEach(id => {
     const el = document.getElementById(id);
     if(el) el.addEventListener('input', atualizarPreview);
   });
+  const valorEl = document.getElementById('f-valor');
+  if (valorEl) {
+    valorEl.addEventListener('input', () => { maskMoeda(valorEl); atualizarPreview(); });
+  }
   if(g) setTimeout(atualizarPreview,50);
 }
 
 function atualizarPreview() {
   const data = document.getElementById('f-data')?.value;
   const cartao = document.getElementById('f-cartao')?.value;
-  const valor = parseFloat(document.getElementById('f-valor')?.value);
+  const valor = parseMoeda(document.getElementById('f-valor')?.value);
   const parcelas = parseInt(document.getElementById('f-parcelas')?.value)||1;
   const el = document.getElementById('preview-parc');
   if(!el) return;
@@ -518,7 +600,7 @@ function salvarGasto() {
   const data = document.getElementById('f-data')?.value;
   const cartao = document.getElementById('f-cartao')?.value;
   const desc = document.getElementById('f-desc')?.value.trim();
-  const valor = parseFloat(document.getElementById('f-valor')?.value);
+  const valor = parseMoeda(document.getElementById('f-valor')?.value);
   const parcelas = parseInt(document.getElementById('f-parcelas')?.value)||1;
   const categoria = document.getElementById('f-cat')?.value;
   const titular = document.getElementById('f-tit')?.value;
@@ -658,11 +740,13 @@ function renderFatTab() {
         <label class="field-label">Mês de referência</label>
         <input type="month" id="fc-mes" value="${mesAtual()}">
         <label class="field-label">Valor do banco (R$)</label>
-        <input type="number" id="fc-val" placeholder="0.00" step="0.01">
+        <input type="text" inputmode="decimal" id="fc-val" placeholder="0,00">
         <div id="fc-prev" style="margin-top:10px"></div>
         <button class="btn btn-primary" onclick="fecharFatura()">Fechar fatura</button>
       </div>`;
-    ['fc-car','fc-mes','fc-val'].forEach(id=>{ document.getElementById(id)?.addEventListener('input',fcPreview); });
+    ['fc-car','fc-mes'].forEach(id=>{ document.getElementById(id)?.addEventListener('input',fcPreview); });
+    const fcValEl = document.getElementById('fc-val');
+    if (fcValEl) fcValEl.addEventListener('input', () => { maskMoeda(fcValEl); fcPreview(); });
     fcPreview();
   } else {
     const hist = [...D.faturas].reverse();
@@ -681,7 +765,7 @@ function renderFatTab() {
 function fcPreview() {
   const ck=document.getElementById('fc-car')?.value;
   const mes=document.getElementById('fc-mes')?.value;
-  const vb=parseFloat(document.getElementById('fc-val')?.value)||0;
+  const vb=parseMoeda(document.getElementById('fc-val')?.value)||0;
   const el=document.getElementById('fc-prev');
   if(!el||!mes) return;
   const {total}=getTotaisFatura(ck,mes);
@@ -696,7 +780,7 @@ function fcPreview() {
 function fecharFatura() {
   const ck=document.getElementById('fc-car')?.value;
   const mes=document.getElementById('fc-mes')?.value;
-  const vb=parseFloat(document.getElementById('fc-val')?.value);
+  const vb=parseMoeda(document.getElementById('fc-val')?.value);
   if(!mes||!vb) { showToast('Preencha o mês e o valor'); return; }
   const {total,gastos}=getTotaisFatura(ck,mes);
   D.faturas.push({id:uid(),cartao:ck,mes,valorBanco:vb,totalCalculado:total,diferenca:vb-total,gastoIds:gastos.map(g=>g.id),fechadaEm:new Date().toISOString()});
@@ -709,30 +793,118 @@ function fecharFatura() {
 function renderMais() {
   document.getElementById('page-mais').innerHTML = `
     <div class="sec-title">Mais</div>
+
     <div class="card">
-      <div class="card-title">Exportar para análise</div>
-      <p style="font-size:14px;color:var(--text2);margin-bottom:12px;line-height:1.6">Copie os dados e cole no chat do Claude para análises, conferência de fatura ou relatório de reembolso.</p>
-      <button class="btn btn-secondary" style="margin-top:0;margin-bottom:8px" onclick="copiar('todos')">Copiar todos os gastos</button>
-      <button class="btn btn-secondary" style="margin-top:0;margin-bottom:8px" onclick="copiar('igui')">Copiar gastos iGUi (reembolso)</button>
-      <label class="field-label">Mês para exportar</label>
+      <div class="card-title">📄 Exportar relatório (PDF)</div>
+      <p style="font-size:14px;color:var(--text2);margin-bottom:12px;line-height:1.6">Gera um PDF formatado, fácil de ler no celular. Toque em <strong>Compartilhar → Imprimir → Salvar em PDF</strong> na tela que abrir.</p>
+      <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDF('todos')">🧾 Relatório completo de gastos</button>
+      <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDF('igui')">🏢 Relatório de reembolso iGUi</button>
+      <label class="field-label">Mês para relatório por fatura</label>
       <select id="exp-mes">${getProximosMeses(6).concat([...new Set(D.faturas.map(f=>f.mes))]).sort().reverse().map(m=>`<option value="${m}">${m}</option>`).join('')}</select>
-      <button class="btn btn-secondary" style="margin-top:8px" onclick="copiar('mes')">Copiar gastos do mês selecionado</button>
+      <button class="btn btn-accent" style="margin-top:8px" onclick="gerarPDF('mes')">📅 Relatório do mês selecionado</button>
     </div>
+
     <div class="card">
-      <div class="card-title">Dados</div>
-      <p style="font-size:14px;color:var(--text2);margin-bottom:12px">${D.gastos.length} gastos · ${D.faturas.length} faturas fechadas</p>
-      <button class="btn btn-danger" style="margin-top:0" onclick="confirmarLimpar()">Limpar todos os dados</button>
+      <div class="card-title">📋 Copiar texto (para colar no chat)</div>
+      <p style="font-size:14px;color:var(--text2);margin-bottom:12px;line-height:1.6">Útil para colar aqui mesmo numa conversa com o Claude e pedir análises.</p>
+      <button class="btn btn-secondary" style="margin-top:0;margin-bottom:8px" onclick="copiar('todos')">Copiar todos os gastos</button>
+      <button class="btn btn-secondary" style="margin-top:0" onclick="copiar('igui')">Copiar gastos iGUi (reembolso)</button>
     </div>
+
     <div class="card">
-      <div class="card-title">Como usar</div>
+      <div class="card-title">⚠️ Zona de risco</div>
+      <p style="font-size:14px;color:var(--text2);margin-bottom:12px">${D.gastos.length} gastos registrados · ${D.faturas.length} faturas fechadas</p>
+      <button class="btn btn-danger" style="margin-top:0" onclick="confirmarLimpar()">🗑️ Limpar todos os dados</button>
+      <p style="font-size:12px;color:var(--text3);margin-top:8px">Essa ação é irreversível. Você precisará digitar uma palavra de confirmação antes de apagar.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">ℹ️ Como usar</div>
       <div style="font-size:13px;color:var(--text2);line-height:1.8">
         <div>1. Lance cada compra na hora em <strong>Lançar</strong></div>
         <div>2. Acompanhe faturas por cartão em <strong>Faturas</strong></div>
-        <div>3. No final do mês, exporte e envie o PDF aqui no chat</div>
+        <div>3. No final do mês, gere o PDF e envie para o Claude</div>
         <div>4. O Claude confere e aponta diferenças</div>
       </div>
     </div>
   `;
+}
+
+function gerarPDF(tipo) {
+  const mes = document.getElementById('exp-mes')?.value || mesAtual();
+  let titulo = '', linhas = [], totalLabel = '', totalValor = 0;
+
+  if (tipo === 'todos') {
+    titulo = 'Relatório completo de gastos';
+    const lista = [...D.gastos].sort((a,b)=>a.data.localeCompare(b.data));
+    linhas = lista.map(g => {
+      const c = CARTOES[g.cartao]||{};
+      return { data: fmtD(g.data), desc: g.desc, extra: c.nome, cat: g.categoria, parc: g.parcelas>1?`${g.parcelas}x`:'-', valor: R(g.valor) };
+    });
+    totalLabel = 'Total geral';
+    totalValor = D.gastos.reduce((s,g)=>s+Number(g.valor),0);
+  } else if (tipo === 'igui') {
+    titulo = 'Relatório de reembolso — iGUi';
+    const lista = D.gastos.filter(g=>g.categoria==='Loja - iGUi').sort((a,b)=>a.data.localeCompare(b.data));
+    linhas = lista.map(g => {
+      const c = CARTOES[g.cartao]||{};
+      return { data: fmtD(g.data), desc: g.desc, extra: c.nome, cat: g.titular||'', parc: g.parcelas>1?`${g.parcelas}x`:'-', valor: R(g.valor) };
+    });
+    totalLabel = 'Total a reembolsar';
+    totalValor = lista.reduce((s,g)=>s+Number(g.valor),0);
+  } else if (tipo === 'mes') {
+    titulo = `Relatório da fatura — ${mes}`;
+    Object.entries(CARTOES).forEach(([k,c]) => {
+      const {gastos} = getTotaisFatura(k,mes);
+      gastos.sort((a,b)=>a.data.localeCompare(b.data)).forEach(g => {
+        linhas.push({ data: fmtD(g.data), desc: g.desc, extra: c.nome, cat: g.categoria, parc: g.pt>1?`${g.pn}/${g.pt}`:'-', valor: R(g.vp) });
+        totalValor += g.vp;
+      });
+    });
+    totalLabel = 'Total da fatura';
+  }
+
+  const linhasHtml = linhas.map(l => `
+    <tr>
+      <td>${l.data}</td>
+      <td>${l.desc}</td>
+      <td>${l.extra}</td>
+      <td>${l.cat}</td>
+      <td style="text-align:center">${l.parc}</td>
+      <td style="text-align:right;font-weight:600">${l.valor}</td>
+    </tr>`).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8">
+<style>
+  body{font-family:-apple-system,Arial,sans-serif;padding:24px;color:#1a1a18;font-size:13px}
+  h1{font-size:19px;margin-bottom:2px}
+  .sub{color:#666;margin-bottom:18px;font-size:12px}
+  table{width:100%;border-collapse:collapse;margin-top:12px}
+  th{background:#1a1a18;color:#fff;padding:8px 6px;text-align:left;font-size:11px}
+  td{padding:6px;border-bottom:1px solid #ddd;font-size:12px}
+  tr:nth-child(even) td{background:#f7f7f5}
+  .total-row td{font-weight:bold;background:#eee;font-size:14px;border-top:2px solid #1a1a18}
+  @media print{body{padding:10px}}
+  @page{margin:14mm}
+</style>
+</head><body>
+<h1>${titulo}</h1>
+<p class="sub">Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')} · ${linhas.length} lançamento(s)</p>
+<table>
+  <thead><tr><th>Data</th><th>Descrição</th><th>Cartão</th><th>Categoria/Titular</th><th>Parc.</th><th>Valor</th></tr></thead>
+  <tbody>
+    ${linhasHtml || '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px">Nenhum lançamento encontrado.</td></tr>'}
+    <tr class="total-row"><td colspan="5">${totalLabel}</td><td style="text-align:right">${R(totalValor)}</td></tr>
+  </tbody>
+</table>
+</body></html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) { showToast('Permita pop-ups para gerar o PDF'); return; }
+  win.document.write(html);
+  win.document.close();
+  setTimeout(()=>win.print(), 300);
 }
 
 function copiar(tipo) {
@@ -777,24 +949,62 @@ function copiar(tipo) {
 
 // Confirm dialog
 let dlgCb=null;
+let dlgRequiredWord=null;
+
 function confirmarDelete(id) {
   document.getElementById('dlg-title').textContent='Remover gasto';
-  document.getElementById('dlg-msg').textContent='Tem certeza que deseja remover este lançamento?';
+  document.getElementById('dlg-msg').textContent='Tem certeza que deseja remover este lançamento? Essa ação não pode ser desfeita.';
   document.getElementById('dlg-ok').textContent='Remover';
   document.getElementById('dlg-ok').style.background='var(--red-bg)';
   document.getElementById('dlg-ok').style.color='var(--red)';
+  document.getElementById('dlg-confirm-wrap').style.display='none';
+  dlgRequiredWord=null;
   dlgCb=()=>{ D.gastos=D.gastos.filter(g=>g.id!==id); save(); renderGastos(); showToast('Removido'); };
   document.getElementById('overlay').classList.add('show');
 }
+
 function confirmarLimpar() {
+  const n = D.gastos.length;
   document.getElementById('dlg-title').textContent='Limpar todos os dados';
-  document.getElementById('dlg-msg').textContent='Isso vai apagar todos os lançamentos e faturas. Não pode ser desfeito.';
+  document.getElementById('dlg-msg').textContent=`Isso vai apagar permanentemente ${n} lançamento(s) e todo o histórico de faturas. Essa ação NÃO PODE ser desfeita e os dados não ficam salvos em nenhum outro lugar.`;
   document.getElementById('dlg-ok').textContent='Limpar tudo';
+  document.getElementById('dlg-ok').style.background='var(--red-bg)';
+  document.getElementById('dlg-ok').style.color='var(--red)';
+  // Exige digitar uma palavra exata para liberar o botão, evitando exclusão acidental
+  dlgRequiredWord='APAGAR';
+  document.getElementById('dlg-confirm-word').textContent=dlgRequiredWord;
+  document.getElementById('dlg-confirm-wrap').style.display='block';
+  const input = document.getElementById('dlg-confirm-input');
+  input.value='';
+  document.getElementById('dlg-ok').disabled = true;
+  document.getElementById('dlg-ok').style.opacity = 0.4;
+  input.oninput = () => {
+    const ok = input.value.trim().toUpperCase() === dlgRequiredWord;
+    document.getElementById('dlg-ok').disabled = !ok;
+    document.getElementById('dlg-ok').style.opacity = ok ? 1 : 0.4;
+  };
   dlgCb=()=>{ D={gastos:[],faturas:[]}; save(); renderMais(); showToast('Dados apagados'); };
   document.getElementById('overlay').classList.add('show');
+  setTimeout(()=>input.focus(), 100);
 }
-function dlgCancel() { document.getElementById('overlay').classList.remove('show'); dlgCb=null; }
-document.getElementById('dlg-ok').addEventListener('click',()=>{ if(dlgCb){dlgCb();} dlgCancel(); });
+
+function dlgCancel() {
+  document.getElementById('overlay').classList.remove('show');
+  dlgCb=null;
+  dlgRequiredWord=null;
+  document.getElementById('dlg-confirm-wrap').style.display='none';
+  document.getElementById('dlg-ok').disabled = false;
+  document.getElementById('dlg-ok').style.opacity = 1;
+}
+
+document.getElementById('dlg-ok').addEventListener('click',()=>{
+  if (dlgRequiredWord) {
+    const val = document.getElementById('dlg-confirm-input').value.trim().toUpperCase();
+    if (val !== dlgRequiredWord) { return; } // proteção extra, botão já fica desabilitado
+  }
+  if(dlgCb){dlgCb();}
+  dlgCancel();
+});
 document.getElementById('overlay').addEventListener('click',e=>{ if(e.target===document.getElementById('overlay')) dlgCancel(); });
 
 function showToast(msg) {
