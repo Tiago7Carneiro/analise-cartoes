@@ -151,7 +151,10 @@
   .sec-title { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 16px; }
   
   /* Preview parcelas */
-  .preview-box { background: var(--blue-bg); color: var(--blue); padding: 10px 12px; border-radius: var(--radius-sm); font-size: 13px; margin-top: 10px; line-height: 1.5; }
+  .preview-box { background: var(--blue-bg); color: var(--blue); padding: 10px 12px; border-radius: var(--radius-sm); font-size: 13px; margin-top: 10px; line-height: 1.5; max-height: 260px; overflow-y: auto; }
+  .preview-parc-row { display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid rgba(0,0,0,0.06); font-size:13px; }
+  .preview-parc-row:last-child { border-bottom:none; }
+  .preview-parc-total { display:flex; justify-content:space-between; padding-top:6px; margin-top:4px; border-top:1.5px solid currentColor; font-weight:700; font-size:13px; }
   
   /* Filters */
   .filter-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 12px; -webkit-overflow-scrolling: touch; }
@@ -322,10 +325,18 @@ const TITULARES = ['Tiago','Danielle','Henrique','Lia Rosa','Família'];
 const KEY = 'gestor_tiago_v3';
 let D = {gastos:[], faturas:[]};
 try { const r = localStorage.getItem(KEY); if(r) D = JSON.parse(r); } catch(e){}
+if (!D.planejados) D.planejados = []; // compatibilidade com backups/dados salvos antes desse recurso existir
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(D)); } catch(e){} };
 
 const R = (v,d=2) => Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:d,maximumFractionDigits:d});
 const fmtD = s => s ? s.split('-').reverse().join('/') : '';
+const MESES_ABREV = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+// Converte chave interna "2026-06" para exibição "Jun (6)/26"
+function fmtFatura(fk) {
+  if (!fk) return '';
+  const [y,m] = fk.split('-').map(Number);
+  return `${MESES_ABREV[m-1]} (${m})/${String(y).slice(-2)}`;
+}
 const uid = () => Date.now().toString(36)+Math.random().toString(36).substr(2,5);
 
 // Máscara de moeda BR: digita só números, formata como 0,00 / 1.234,56 automaticamente
@@ -461,14 +472,14 @@ function renderHome() {
   const n = new Date();
   document.getElementById('header-mes').textContent = n.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
 
-  let totalGeral=0, totalIgui=0;
+  let totalGeral=0, totalIgui=0, countIgui=0;
   Object.keys(CARTOES).forEach(k => {
     const fk = getFaturaAbertaCartao(k);
     totalGeral += getTotaisFatura(k,fk).total;
   });
   D.gastos.forEach(g => {
     const fkCartao = getFaturaAbertaCartao(g.cartao);
-    getParcelas(g).forEach(p => { if(p.fk===fkCartao && g.categoria==='Loja - iGUi') totalIgui+=p.val; });
+    getParcelas(g).forEach(p => { if(p.fk===fkCartao && g.categoria==='Loja - iGUi') { totalIgui+=p.val; countIgui++; } });
   });
 
   const c6Fk = getFaturaAbertaCartao('c6');
@@ -479,8 +490,8 @@ function renderHome() {
 
   // Alertas
   let alertas = '';
-  if(carrefourMes===0) alertas += `<div class="alert alert-warn">⚠️ Carrefour sem compras na fatura aberta (${carrefourFk}) — risco de anuidade.</div>`;
-  if(c6Pct<100) alertas += `<div class="alert ${c6Pct>70?'alert-warn':'alert-info'}">C6: faltam ${R(10000-c6Mes)} para isenção de anuidade na fatura ${c6Fk} (${c6Pct}%).</div>`;
+  if(carrefourMes===0) alertas += `<div class="alert alert-warn">⚠️ Carrefour sem compras na fatura aberta (${fmtFatura(carrefourFk)}) — risco de anuidade.</div>`;
+  if(c6Pct<100) alertas += `<div class="alert ${c6Pct>70?'alert-warn':'alert-info'}">C6: faltam ${R(10000-c6Mes)} para isenção de anuidade na fatura ${fmtFatura(c6Fk)} (${c6Pct}%).</div>`;
 
   // Cartões
   let cartoesHtml = '';
@@ -497,7 +508,7 @@ function renderHome() {
     const urgente = dias>=0&&dias<=3;
     cartoesHtml += `<div class="cartao-row">
       <div><div class="cartao-nome">${c.emoji} ${c.nome}</div>
-      <div class="cartao-info">Fatura ${fk} · fecha ${fdStr} · vence dia ${c.venc}</div>
+      <div class="cartao-info">Fatura ${fmtFatura(fk)} · fecha ${fdStr} · vence dia ${c.venc}</div>
       ${k==='c6'?`<div class="progress" style="width:120px;margin-top:4px"><div class="progress-fill" style="width:${c6Pct}%;background:${c6Pct>=100?'var(--green)':'var(--amber)'}"></div></div>`:''}
       </div>
       <div><div class="cartao-val">${R(total)}</div>
@@ -514,7 +525,7 @@ function renderHome() {
     ${alertas}
     <div class="metric-grid">
       <div class="metric"><div class="m-label">Total faturas em aberto</div><div class="m-val">${R(totalGeral)}</div><div class="m-sub">próximos vencimentos de cada cartão</div></div>
-      <div class="metric"><div class="m-label">Reembolso iGUi</div><div class="m-val">${R(totalIgui)}</div><div class="m-sub">faturas em aberto</div></div>
+      <div class="metric" style="background:var(--green-bg);border-color:var(--green)"><div class="m-label" style="color:var(--green)">💰 Prévia reembolso iGUi</div><div class="m-val" style="color:var(--green)">${R(totalIgui)}</div><div class="m-sub" style="color:var(--green)">${countIgui} lançamento(s) · faturas em aberto</div></div>
     </div>
     <div class="metric" style="margin-bottom:12px">
       <div class="m-label">C6 — meta anuidade</div>
@@ -588,11 +599,16 @@ function atualizarPreview() {
   const ps = getParcelas(g);
   el.style.display = 'block';
   if(parcelas===1) {
-    el.textContent = `→ Cai na fatura ${ps[0].fk} (${CARTOES[cartao].nome})`;
+    el.innerHTML = `→ Cai na fatura <strong>${fmtFatura(ps[0].fk)}</strong> (${CARTOES[cartao].nome})`;
   } else {
-    const c = CARTOES[cartao];
-    const linhas = ps.slice(0,4).map(p=>`${p.num}ª parc. → ${p.fk}`).join(' · ');
-    el.textContent = `${R(valor/parcelas)} por parcela · ${linhas}${parcelas>4?' · ...':''}`;
+    // Lista completa de todas as parcelas, sem limite de exibição, em formato de tabela vertical
+    const linhas = ps.map(p => `
+      <div class="preview-parc-row">
+        <span>${p.num}ª de ${p.tot}</span>
+        <span>${fmtFatura(p.fk)}</span>
+        <span>${R(p.val)}</span>
+      </div>`).join('');
+    el.innerHTML = `${linhas}<div class="preview-parc-total"><span>Total</span><span>${R(valor)}</span></div>`;
   }
 }
 
@@ -650,7 +666,7 @@ function renderGastos() {
     </div>
     <div class="filter-row">
       <button class="filter-chip ${!filtMes?'active':''}" onclick="setFil('m','')">Todos os meses</button>
-      ${mesesArr.map(m=>`<button class="filter-chip ${filtMes===m?'active':''}" onclick="setFil('m','${m}')">${m}</button>`).join('')}
+      ${mesesArr.map(m=>`<button class="filter-chip ${filtMes===m?'active':''}" onclick="setFil('m','${m}')">${fmtFatura(m)}</button>`).join('')}
     </div>
     <div class="card">
       ${lista.length ? lista.map(g=>gastoItemHTML(g,false)).join('') : '<div class="empty">Nenhum gasto encontrado.</div>'}
@@ -680,7 +696,7 @@ function gastoItemHTML(g, compact) {
       <div class="gasto-tags">
         ${igui?'<span class="badge badge-green">iGUi</span>':''}
         ${antiga?'<span class="badge badge-amber">loja antiga</span>':''}
-        ${ps.length?`<span class="badge badge-gray">fatura ${ps[0].fk}</span>`:''}
+        ${ps.length?`<span class="badge badge-gray">fatura ${fmtFatura(ps[0].fk)}</span>`:''}
       </div>
     </div>
     <div class="gasto-right">
@@ -700,6 +716,7 @@ function renderFaturas() {
     <div class="sec-title">Faturas</div>
     <div class="tabs">
       <button class="tab ${faturasTab==='abertas'?'active':''}" onclick="setFatTab('abertas')">Em aberto</button>
+      <button class="tab ${faturasTab==='planejar'?'active':''}" onclick="setFatTab('planejar')">Planejar</button>
       <button class="tab ${faturasTab==='fechar'?'active':''}" onclick="setFatTab('fechar')">Fechar</button>
       <button class="tab ${faturasTab==='hist'?'active':''}" onclick="setFatTab('hist')">Histórico</button>
     </div>
@@ -711,7 +728,7 @@ function renderFaturas() {
 function setFatTab(t) {
   faturasTab=t;
   document.querySelectorAll('#page-faturas .tab').forEach((el,i)=>{
-    el.classList.toggle('active',['abertas','fechar','hist'][i]===t);
+    el.classList.toggle('active',['abertas','planejar','fechar','hist'][i]===t);
   });
   renderFatTab();
 }
@@ -728,9 +745,11 @@ function renderFatTab() {
         const {total}=getTotaisFatura(k,mes);
         if(total>0) { totalMes+=total; linhas+=`<div class="cartao-row"><div><div class="cartao-nome">${c.emoji} ${c.nome}</div></div><div class="cartao-val">${R(total)}</div></div>`; }
       });
-      if(totalMes>0) html+=`<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:8px"><strong>Fatura ${mes}</strong><strong>${R(totalMes)}</strong></div>${linhas}</div>`;
+      if(totalMes>0) html+=`<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:8px"><strong>Fatura ${fmtFatura(mes)}</strong><strong>${R(totalMes)}</strong></div>${linhas}</div>`;
     });
     el.innerHTML = html||'<div class="empty">Nenhum lançamento nos próximos meses.</div>';
+  } else if(faturasTab==='planejar') {
+    renderPlanejar(el);
   } else if(faturasTab==='fechar') {
     const carOpts = Object.entries(CARTOES).map(([k,c])=>`<option value="${k}">${c.emoji} ${c.nome}</option>`).join('');
     el.innerHTML = `
@@ -755,7 +774,7 @@ function renderFatTab() {
       const c=CARTOES[f.cartao]||{};
       const ok=Math.abs(f.diferenca)<0.02;
       return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center">
-        <div><div style="font-weight:600">${c.emoji||''} ${c.nome} · ${f.mes}</div><div style="font-size:12px;color:var(--text2);margin-top:2px">Fechada ${new Date(f.fechadaEm).toLocaleDateString('pt-BR')}</div></div>
+        <div><div style="font-weight:600">${c.emoji||''} ${c.nome} · ${fmtFatura(f.mes)}</div><div style="font-size:12px;color:var(--text2);margin-top:2px">Fechada ${new Date(f.fechadaEm).toLocaleDateString('pt-BR')}</div></div>
         <span class="badge ${ok?'badge-green':'badge-amber'}">${ok?'✓ ok':'⚠ dif.'}</span>
       </div><div style="margin-top:8px;font-size:13px;color:var(--text2)">Registrado: ${R(f.totalCalculado)} · Banco: ${R(f.valorBanco)}${!ok?` · Dif: ${R(f.diferenca)}`:''}</div></div>`;
     }).join('');
@@ -789,19 +808,126 @@ function fecharFatura() {
   setFatTab('hist');
 }
 
+// PLANEJAMENTO DE COMPRAS FUTURAS
+// Ideia: simular o impacto de uma compra futura nas faturas antes de decidir comprar,
+// e guardar uma lista de "quero comprar" para não esquecer e comparar opções de parcelamento.
+
+function renderPlanejar(el) {
+  const carOpts = Object.entries(CARTOES).map(([k,c])=>`<option value="${k}">${c.emoji} ${c.nome}</option>`).join('');
+  const itensHtml = D.planejados.length ? D.planejados.map(p => {
+    const sim = simularItem(p);
+    return `<div class="card" style="margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div style="font-weight:600;font-size:14px">${p.desc}</div>
+          <div style="font-size:12px;color:var(--text2);margin-top:2px">${R(p.valor)} · ${p.parcelas}x · ${CARTOES[p.cartao]?.nome||''}</div>
+        </div>
+        <button class="action-btn" onclick="removerPlanejado('${p.id}')">🗑️</button>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text2)">
+        Se comprar hoje: 1ª parcela em <strong>${fmtFatura(sim[0].fk)}</strong> de ${R(sim[0].val)}
+        ${sim.length>1?` · última em ${fmtFatura(sim[sim.length-1].fk)}`:''}
+      </div>
+    </div>`;
+  }).join('') : '<div class="empty">Nenhuma compra planejada ainda. Use o simulador abaixo.</div>';
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-title" style="margin-bottom:4px">🧮 Simular compra futura</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.5">Veja em quais faturas as parcelas cairiam, sem registrar a compra. Útil para decidir se compra agora ou espera uma fatura mais tranquila.</p>
+      <label class="field-label" style="margin-top:0">Descrição</label>
+      <input type="text" id="pl-desc" placeholder="Ex: TV nova, viagem...">
+      <div class="field-row">
+        <div><label class="field-label">Valor (R$)</label><input type="text" inputmode="decimal" id="pl-valor" placeholder="0,00"></div>
+        <div><label class="field-label">Parcelas</label><input type="number" id="pl-parcelas" min="1" max="48" value="1"></div>
+      </div>
+      <label class="field-label">Cartão</label>
+      <select id="pl-cartao">${carOpts}</select>
+      <label class="field-label">Data simulada da compra</label>
+      <input type="date" id="pl-data" value="${hoje()}">
+      <div id="pl-resultado" style="margin-top:10px"></div>
+      <button class="btn btn-secondary" style="margin-top:10px" onclick="salvarPlanejado()">💾 Salvar nesta lista</button>
+    </div>
+    <div class="sec-title" style="font-size:16px;margin-top:18px">Minha lista de planejamento</div>
+    ${itensHtml}
+  `;
+
+  ['pl-desc','pl-cartao','pl-parcelas','pl-data'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', atualizarPreviewPlanejar);
+  });
+  const plValorEl = document.getElementById('pl-valor');
+  if (plValorEl) plValorEl.addEventListener('input', () => { maskMoeda(plValorEl); atualizarPreviewPlanejar(); });
+}
+
+function simularItem(p) {
+  return getParcelas({data:p.data, cartao:p.cartao, valor:p.valor, parcelas:p.parcelas});
+}
+
+function atualizarPreviewPlanejar() {
+  const desc = document.getElementById('pl-desc')?.value;
+  const valor = parseMoeda(document.getElementById('pl-valor')?.value);
+  const parcelas = parseInt(document.getElementById('pl-parcelas')?.value)||1;
+  const cartao = document.getElementById('pl-cartao')?.value;
+  const data = document.getElementById('pl-data')?.value;
+  const el = document.getElementById('pl-resultado');
+  if (!el) return;
+  if (!valor || !cartao || !data) { el.innerHTML=''; return; }
+  const sim = simularItem({data,cartao,valor,parcelas});
+  const linhas = sim.map(p => `<div class="preview-parc-row"><span>${p.num}ª de ${p.tot}</span><span>${fmtFatura(p.fk)}</span><span>${R(p.val)}</span></div>`).join('');
+  el.innerHTML = `<div class="preview-box" style="display:block">${linhas}</div>`;
+}
+
+function salvarPlanejado() {
+  const desc = document.getElementById('pl-desc')?.value.trim();
+  const valor = parseMoeda(document.getElementById('pl-valor')?.value);
+  const parcelas = parseInt(document.getElementById('pl-parcelas')?.value)||1;
+  const cartao = document.getElementById('pl-cartao')?.value;
+  const data = document.getElementById('pl-data')?.value;
+  if (!desc || !valor || !cartao || !data) { showToast('Preencha todos os campos'); return; }
+  D.planejados.push({id:uid(), desc, valor, parcelas, cartao, data, criadoEm:new Date().toISOString()});
+  save();
+  showToast('Adicionado à lista de planejamento!');
+  renderFatTab();
+}
+
+function removerPlanejado(id) {
+  D.planejados = D.planejados.filter(p=>p.id!==id);
+  save();
+  renderFatTab();
+}
+
 // MAIS
 function renderMais() {
+  const mesesDisponiveis = [...new Set([
+    ...getProximosMeses(6),
+    ...D.gastos.flatMap(g=>getParcelas(g).map(p=>p.fk))
+  ])].sort();
+
   document.getElementById('page-mais').innerHTML = `
     <div class="sec-title">Mais</div>
 
     <div class="card">
-      <div class="card-title">📄 Exportar relatório (PDF)</div>
-      <p style="font-size:14px;color:var(--text2);margin-bottom:12px;line-height:1.6">Gera um PDF formatado, fácil de ler no celular. Toque em <strong>Compartilhar → Imprimir → Salvar em PDF</strong> na tela que abrir.</p>
-      <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDF('todos')">🧾 Relatório completo de gastos</button>
-      <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDF('igui')">🏢 Relatório de reembolso iGUi</button>
-      <label class="field-label">Mês para relatório por fatura</label>
-      <select id="exp-mes">${getProximosMeses(6).concat([...new Set(D.faturas.map(f=>f.mes))]).sort().reverse().map(m=>`<option value="${m}">${m}</option>`).join('')}</select>
-      <button class="btn btn-accent" style="margin-top:8px" onclick="gerarPDF('mes')">📅 Relatório do mês selecionado</button>
+      <div class="card-title">📄 Relatórios (PDF)</div>
+      <p style="font-size:14px;color:var(--text2);margin-bottom:12px;line-height:1.6">Toque em <strong>Compartilhar → Imprimir → Salvar em PDF</strong> na tela que abrir.</p>
+      <label class="field-label" style="margin-top:0">Fatura de referência</label>
+      <select id="exp-mes">${mesesDisponiveis.slice().reverse().map(m=>`<option value="${m}" ${m===mesAtual()?'selected':''}>${fmtFatura(m)}</option>`).join('')}</select>
+
+      <button class="btn btn-accent" style="margin-top:14px;margin-bottom:8px" onclick="gerarPDFFechamento()">📊 Fechamento por categoria</button>
+      <p style="font-size:12px;color:var(--text3);margin:-4px 0 10px 2px">Total e % de cada categoria, por cartão, na fatura selecionada</p>
+
+      <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDFIgui()">🏢 Reembolso iGUi do mês</button>
+      <p style="font-size:12px;color:var(--text3);margin:-4px 0 10px 2px">Lista detalhada para solicitar reembolso à empresa</p>
+
+      <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDFEvolutivo()">📈 Análise evolutiva do ano</button>
+      <p style="font-size:12px;color:var(--text3);margin:-4px 0 0 2px">Comparativo mês a mês, por categoria e por cartão</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">💾 Backup dos dados</div>
+      <p style="font-size:14px;color:var(--text2);margin-bottom:12px;line-height:1.6">Salve uma cópia de segurança no seu iPhone (Arquivos, iCloud, Google Drive...). Recomendado fazer toda semana.</p>
+      <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="exportarBackup()">⬇️ Baixar backup (.json)</button>
+      <button class="btn btn-secondary" style="margin-top:0" onclick="document.getElementById('backup-file-input').click()">⬆️ Restaurar de um backup</button>
+      <input type="file" id="backup-file-input" accept=".json" style="display:none" onchange="importarBackup(event)">
     </div>
 
     <div class="card">
@@ -815,7 +941,7 @@ function renderMais() {
       <div class="card-title">⚠️ Zona de risco</div>
       <p style="font-size:14px;color:var(--text2);margin-bottom:12px">${D.gastos.length} gastos registrados · ${D.faturas.length} faturas fechadas</p>
       <button class="btn btn-danger" style="margin-top:0" onclick="confirmarLimpar()">🗑️ Limpar todos os dados</button>
-      <p style="font-size:12px;color:var(--text3);margin-top:8px">Essa ação é irreversível. Você precisará digitar uma palavra de confirmação antes de apagar.</p>
+      <p style="font-size:12px;color:var(--text3);margin-top:8px">Essa ação é irreversível. Você precisará digitar uma palavra de confirmação antes de apagar. Faça um backup antes!</p>
     </div>
 
     <div class="card">
@@ -825,86 +951,234 @@ function renderMais() {
         <div>2. Acompanhe faturas por cartão em <strong>Faturas</strong></div>
         <div>3. No final do mês, gere o PDF e envie para o Claude</div>
         <div>4. O Claude confere e aponta diferenças</div>
+        <div>5. Faça backup regularmente em <strong>Mais</strong></div>
       </div>
     </div>
   `;
 }
 
-function gerarPDF(tipo) {
-  const mes = document.getElementById('exp-mes')?.value || mesAtual();
-  let titulo = '', linhas = [], totalLabel = '', totalValor = 0;
+// Imprime um HTML usando um iframe invisível, sem sair do app (resolve o problema do app "travar" após imprimir)
+function imprimirHTML(html) {
+  let iframe = document.getElementById('print-iframe');
+  if (iframe) iframe.remove();
+  iframe = document.createElement('iframe');
+  iframe.id = 'print-iframe';
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  document.body.appendChild(iframe);
+  const doc = iframe.contentWindow.document;
+  doc.open();
+  doc.write(html);
+  doc.close();
+  setTimeout(() => {
+    iframe.contentWindow.focus();
+    iframe.contentWindow.print();
+  }, 250);
+}
 
-  if (tipo === 'todos') {
-    titulo = 'Relatório completo de gastos';
-    const lista = [...D.gastos].sort((a,b)=>a.data.localeCompare(b.data));
-    linhas = lista.map(g => {
-      const c = CARTOES[g.cartao]||{};
-      return { data: fmtD(g.data), desc: g.desc, extra: c.nome, cat: g.categoria, parc: g.parcelas>1?`${g.parcelas}x`:'-', valor: R(g.valor) };
+const PDF_BASE_STYLE = `
+  body{font-family:-apple-system,Arial,sans-serif;padding:20px;color:#1a1a18;font-size:13px}
+  h1{font-size:18px;margin-bottom:2px}
+  h2{font-size:14px;margin:16px 0 6px;border-bottom:2px solid #1a1a18;padding-bottom:4px}
+  .sub{color:#666;margin-bottom:16px;font-size:11px}
+  table{width:100%;border-collapse:collapse;margin-top:6px}
+  th{background:#1a1a18;color:#fff;padding:6px;text-align:left;font-size:10px}
+  td{padding:5px 6px;border-bottom:1px solid #ddd;font-size:11px}
+  tr:nth-child(even) td{background:#f7f7f5}
+  .total-row td{font-weight:bold;background:#eee;font-size:12px;border-top:2px solid #1a1a18}
+  .pct-bar{display:inline-block;height:8px;background:#1a1a18;border-radius:4px;vertical-align:middle;margin-right:4px}
+  .resumo-grid{display:flex;gap:10px;margin:10px 0;flex-wrap:wrap}
+  .resumo-box{flex:1;min-width:110px;border:1px solid #ddd;border-radius:8px;padding:8px 10px}
+  .resumo-box .lbl{font-size:10px;color:#666}
+  .resumo-box .val{font-size:15px;font-weight:bold}
+  @media print{body{padding:8px}}
+  @page{margin:12mm}
+`;
+
+// RELATÓRIO 1: Fechamento por categoria — total e % de cada categoria, por cartão, numa fatura
+function gerarPDFFechamento() {
+  const mes = document.getElementById('exp-mes')?.value || mesAtual();
+  const porCategoria = {}; // categoria -> total
+  const porCartao = {}; // cartaoNome -> total
+  let totalFatura = 0;
+
+  Object.entries(CARTOES).forEach(([k,c]) => {
+    const {gastos} = getTotaisFatura(k, mes);
+    gastos.forEach(g => {
+      porCategoria[g.categoria] = (porCategoria[g.categoria]||0) + g.vp;
+      porCartao[c.nome] = (porCartao[c.nome]||0) + g.vp;
+      totalFatura += g.vp;
     });
-    totalLabel = 'Total geral';
-    totalValor = D.gastos.reduce((s,g)=>s+Number(g.valor),0);
-  } else if (tipo === 'igui') {
-    titulo = 'Relatório de reembolso — iGUi';
-    const lista = D.gastos.filter(g=>g.categoria==='Loja - iGUi').sort((a,b)=>a.data.localeCompare(b.data));
-    linhas = lista.map(g => {
-      const c = CARTOES[g.cartao]||{};
-      return { data: fmtD(g.data), desc: g.desc, extra: c.nome, cat: g.titular||'', parc: g.parcelas>1?`${g.parcelas}x`:'-', valor: R(g.valor) };
+  });
+
+  const catRows = Object.entries(porCategoria).sort((a,b)=>b[1]-a[1]).map(([cat,val]) => {
+    const pct = totalFatura ? (val/totalFatura*100) : 0;
+    return `<tr><td>${cat}</td><td style="text-align:right">${R(val)}</td><td style="text-align:right">${pct.toFixed(1)}%</td><td><div class="pct-bar" style="width:${Math.max(2,pct)}px"></div></td></tr>`;
+  }).join('');
+
+  const cartaoRows = Object.entries(porCartao).sort((a,b)=>b[1]-a[1]).map(([nome,val]) => {
+    const pct = totalFatura ? (val/totalFatura*100) : 0;
+    return `<tr><td>${nome}</td><td style="text-align:right">${R(val)}</td><td style="text-align:right">${pct.toFixed(1)}%</td></tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>${PDF_BASE_STYLE}</style></head><body>
+    <h1>Fechamento por categoria</h1>
+    <p class="sub">Fatura ${fmtFatura(mes)} · Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')}</p>
+    <div class="resumo-grid">
+      <div class="resumo-box"><div class="lbl">Total da fatura</div><div class="val">${R(totalFatura)}</div></div>
+      <div class="resumo-box"><div class="lbl">Categorias</div><div class="val">${Object.keys(porCategoria).length}</div></div>
+      <div class="resumo-box"><div class="lbl">Cartões usados</div><div class="val">${Object.keys(porCartao).length}</div></div>
+    </div>
+    <h2>Por categoria</h2>
+    <table><thead><tr><th>Categoria</th><th style="text-align:right">Valor</th><th style="text-align:right">%</th><th></th></tr></thead>
+    <tbody>${catRows || '<tr><td colspan="4" style="text-align:center;color:#999;padding:14px">Sem lançamentos nesta fatura.</td></tr>'}
+    <tr class="total-row"><td>TOTAL</td><td style="text-align:right">${R(totalFatura)}</td><td style="text-align:right">100%</td><td></td></tr></tbody></table>
+    <h2>Por cartão</h2>
+    <table><thead><tr><th>Cartão</th><th style="text-align:right">Valor</th><th style="text-align:right">%</th></tr></thead>
+    <tbody>${cartaoRows || '<tr><td colspan="3" style="text-align:center;color:#999;padding:14px">Sem lançamentos.</td></tr>'}</tbody></table>
+  </body></html>`;
+  imprimirHTML(html);
+}
+
+// RELATÓRIO 2: Reembolso iGUi do mês — lista detalhada
+function gerarPDFIgui() {
+  const mes = document.getElementById('exp-mes')?.value || mesAtual();
+  const linhas = [];
+  let total = 0;
+  Object.entries(CARTOES).forEach(([k,c]) => {
+    const {gastos} = getTotaisFatura(k, mes);
+    gastos.filter(g=>g.categoria==='Loja - iGUi').forEach(g => {
+      linhas.push({data:fmtD(g.data), desc:g.desc, cartao:c.nome, titular:g.titular||'', parc: g.pt>1?`${g.pn}/${g.pt}`:'-', valor:R(g.vp)});
+      total += g.vp;
     });
-    totalLabel = 'Total a reembolsar';
-    totalValor = lista.reduce((s,g)=>s+Number(g.valor),0);
-  } else if (tipo === 'mes') {
-    titulo = `Relatório da fatura — ${mes}`;
-    Object.entries(CARTOES).forEach(([k,c]) => {
-      const {gastos} = getTotaisFatura(k,mes);
-      gastos.sort((a,b)=>a.data.localeCompare(b.data)).forEach(g => {
-        linhas.push({ data: fmtD(g.data), desc: g.desc, extra: c.nome, cat: g.categoria, parc: g.pt>1?`${g.pn}/${g.pt}`:'-', valor: R(g.vp) });
-        totalValor += g.vp;
+  });
+  linhas.sort((a,b)=>a.data.localeCompare(b.data));
+  const rows = linhas.map((l,i) => `<tr><td>${i+1}</td><td>${l.data}</td><td>${l.desc}</td><td>${l.cartao}</td><td>${l.titular}</td><td>${l.parc}</td><td style="text-align:right;font-weight:600">${l.valor}</td></tr>`).join('');
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>${PDF_BASE_STYLE}</style></head><body>
+    <h1>Relatório de reembolso — iGUi</h1>
+    <p class="sub">Fatura ${fmtFatura(mes)} · Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')} · ${linhas.length} item(ns)</p>
+    <table><thead><tr><th>#</th><th>Data</th><th>Descrição</th><th>Cartão</th><th>Titular</th><th>Parc.</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="7" style="text-align:center;color:#999;padding:14px">Nenhum gasto iGUi nesta fatura.</td></tr>'}
+    <tr class="total-row"><td colspan="6">TOTAL A REEMBOLSAR</td><td style="text-align:right">${R(total)}</td></tr></tbody></table>
+    <p style="margin-top:30px;font-size:12px">Assinatura: ________________________________________ &nbsp;&nbsp; Data: ___/___/______</p>
+  </body></html>`;
+  imprimirHTML(html);
+}
+
+// RELATÓRIO 3: Análise evolutiva do ano — comparação mês a mês
+function gerarPDFEvolutivo() {
+  const mesRef = document.getElementById('exp-mes')?.value || mesAtual();
+  const ano = mesRef.split('-')[0];
+  const todosMeses = Array.from({length:12}, (_,i) => `${ano}-${String(i+1).padStart(2,'0')}`);
+
+  const totalPorMes = {};
+  const categoriaPorMes = {}; // mes -> {categoria: total}
+  todosMeses.forEach(m => { totalPorMes[m]=0; categoriaPorMes[m]={}; });
+
+  Object.keys(CARTOES).forEach(k => {
+    D.gastos.filter(g=>g.cartao===k).forEach(g => {
+      getParcelas(g).forEach(p => {
+        if (totalPorMes[p.fk] !== undefined) {
+          totalPorMes[p.fk] += p.val;
+          categoriaPorMes[p.fk][g.categoria] = (categoriaPorMes[p.fk][g.categoria]||0) + p.val;
+        }
       });
     });
-    totalLabel = 'Total da fatura';
-  }
+  });
 
-  const linhasHtml = linhas.map(l => `
-    <tr>
-      <td>${l.data}</td>
-      <td>${l.desc}</td>
-      <td>${l.extra}</td>
-      <td>${l.cat}</td>
-      <td style="text-align:center">${l.parc}</td>
-      <td style="text-align:right;font-weight:600">${l.valor}</td>
-    </tr>`).join('');
+  const maxVal = Math.max(1, ...Object.values(totalPorMes));
+  const mesesComDados = todosMeses.filter(m => totalPorMes[m] > 0);
+  const totalAno = mesesComDados.reduce((s,m)=>s+totalPorMes[m],0);
+  const mediaMensal = mesesComDados.length ? totalAno/mesesComDados.length : 0;
 
-  const html = `<!DOCTYPE html>
-<html lang="pt-BR"><head><meta charset="UTF-8">
-<style>
-  body{font-family:-apple-system,Arial,sans-serif;padding:24px;color:#1a1a18;font-size:13px}
-  h1{font-size:19px;margin-bottom:2px}
-  .sub{color:#666;margin-bottom:18px;font-size:12px}
-  table{width:100%;border-collapse:collapse;margin-top:12px}
-  th{background:#1a1a18;color:#fff;padding:8px 6px;text-align:left;font-size:11px}
-  td{padding:6px;border-bottom:1px solid #ddd;font-size:12px}
-  tr:nth-child(even) td{background:#f7f7f5}
-  .total-row td{font-weight:bold;background:#eee;font-size:14px;border-top:2px solid #1a1a18}
-  @media print{body{padding:10px}}
-  @page{margin:14mm}
-</style>
-</head><body>
-<h1>${titulo}</h1>
-<p class="sub">Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')} · ${linhas.length} lançamento(s)</p>
-<table>
-  <thead><tr><th>Data</th><th>Descrição</th><th>Cartão</th><th>Categoria/Titular</th><th>Parc.</th><th>Valor</th></tr></thead>
-  <tbody>
-    ${linhasHtml || '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px">Nenhum lançamento encontrado.</td></tr>'}
-    <tr class="total-row"><td colspan="5">${totalLabel}</td><td style="text-align:right">${R(totalValor)}</td></tr>
-  </tbody>
-</table>
-</body></html>`;
+  const barRows = todosMeses.map(m => {
+    const val = totalPorMes[m];
+    const widthPct = maxVal ? (val/maxVal*100) : 0;
+    return `<tr>
+      <td style="white-space:nowrap">${fmtFatura(m)}</td>
+      <td style="width:55%"><div style="background:#1a1a18;height:14px;border-radius:3px;width:${Math.max(widthPct,val>0?2:0)}%"></div></td>
+      <td style="text-align:right;font-weight:600">${R(val)}</td>
+    </tr>`;
+  }).join('');
 
-  const win = window.open('', '_blank');
-  if (!win) { showToast('Permita pop-ups para gerar o PDF'); return; }
-  win.document.write(html);
-  win.document.close();
-  setTimeout(()=>win.print(), 300);
+  // Top categorias do ano
+  const totalCategoriaAno = {};
+  Object.values(categoriaPorMes).forEach(catObj => {
+    Object.entries(catObj).forEach(([cat,val]) => { totalCategoriaAno[cat]=(totalCategoriaAno[cat]||0)+val; });
+  });
+  const topCatRows = Object.entries(totalCategoriaAno).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([cat,val]) => {
+    const pct = totalAno ? (val/totalAno*100) : 0;
+    return `<tr><td>${cat}</td><td style="text-align:right">${R(val)}</td><td style="text-align:right">${pct.toFixed(1)}%</td></tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>${PDF_BASE_STYLE}</style></head><body>
+    <h1>Análise evolutiva — ${ano}</h1>
+    <p class="sub">Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')}</p>
+    <div class="resumo-grid">
+      <div class="resumo-box"><div class="lbl">Total no ano</div><div class="val">${R(totalAno)}</div></div>
+      <div class="resumo-box"><div class="lbl">Média mensal</div><div class="val">${R(mediaMensal)}</div></div>
+      <div class="resumo-box"><div class="lbl">Meses com gastos</div><div class="val">${mesesComDados.length}</div></div>
+    </div>
+    <h2>Evolução mês a mês</h2>
+    <table><tbody>${barRows}</tbody></table>
+    <h2>Top categorias do ano</h2>
+    <table><thead><tr><th>Categoria</th><th style="text-align:right">Valor</th><th style="text-align:right">%</th></tr></thead>
+    <tbody>${topCatRows || '<tr><td colspan="3" style="text-align:center;color:#999;padding:14px">Sem dados.</td></tr>'}</tbody></table>
+  </body></html>`;
+  imprimirHTML(html);
+}
+
+// BACKUP: exporta todos os dados em arquivo .json para guardar em local seguro
+function exportarBackup() {
+  const payload = { ...D, exportadoEm: new Date().toISOString(), versao: 1 };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const dataStr = new Date().toISOString().split('T')[0];
+  a.href = url;
+  a.download = `backup-cartoes-${dataStr}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('Backup gerado! Salve o arquivo em local seguro.');
+}
+
+// BACKUP: restaura dados de um arquivo .json exportado anteriormente
+function importarBackup(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      if (!parsed.gastos || !Array.isArray(parsed.gastos)) throw new Error('Formato inválido');
+      const n = parsed.gastos.length;
+      document.getElementById('dlg-title').textContent = 'Restaurar backup';
+      document.getElementById('dlg-msg').textContent = `Este arquivo contém ${n} lançamento(s). Restaurar vai SUBSTITUIR todos os dados atuais (${D.gastos.length} lançamento(s)). Deseja continuar?`;
+      document.getElementById('dlg-ok').textContent = 'Restaurar';
+      document.getElementById('dlg-ok').style.background = 'var(--blue-bg)';
+      document.getElementById('dlg-ok').style.color = 'var(--blue)';
+      document.getElementById('dlg-confirm-wrap').style.display = 'none';
+      dlgRequiredWord = null;
+      dlgCb = () => {
+        D = { gastos: parsed.gastos||[], faturas: parsed.faturas||[], planejados: parsed.planejados||[] };
+        save();
+        renderMais();
+        showToast('Backup restaurado com sucesso!');
+      };
+      document.getElementById('overlay').classList.add('show');
+    } catch(err) {
+      showToast('Arquivo inválido. Use um backup gerado pelo próprio app.');
+    }
+    event.target.value = '';
+  };
+  reader.readAsText(file);
 }
 
 function copiar(tipo) {
