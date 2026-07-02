@@ -484,7 +484,7 @@ function renderHome() {
   // "Em aberto" = fatura cujo mês de vencimento é >= mês atual
   const mesAtualKey = mesAtual();
   D.gastos.forEach(g => {
-    if(g.categoria !== 'Loja - iGUi') return;
+    if(g.categoria !== 'Loja - iGUi (reembolso)') return;
     getParcelas(g).forEach(p => {
       if(p.fk >= mesAtualKey) { totalIgui += p.val; countIgui++; }
     });
@@ -746,7 +746,7 @@ function setFil(tipo, val) {
 function gastoItemHTML(g, compact) {
   const c = CARTOES[g.cartao]||{};
   const ps = getParcelas(g);
-  const igui = g.categoria==='Loja - iGUi';
+  const igui = g.categoria==='Loja - iGUi (reembolso)';
   const antiga = g.categoria==='Loja - Antiga';
   const parc = g.parcelas>1?` · ${g.parcelas}x`:'';
   return `<div class="gasto-item">
@@ -1191,7 +1191,7 @@ function gerarPDFIgui() {
   let total = 0;
   Object.entries(CARTOES).forEach(([k,c]) => {
     const {gastos} = getTotaisFatura(k, mes);
-    gastos.filter(g=>g.categoria==='Loja - iGUi').forEach(g => {
+    gastos.filter(g=>g.categoria==='Loja - iGUi (reembolso)').forEach(g => {
       linhas.push({data:fmtD(g.data), desc:g.desc, cartao:c.nome, titular:g.titular||'', parc: g.pt>1?`${g.pn}/${g.pt}`:'-', valor:R(g.vp)});
       total += g.vp;
     });
@@ -1332,7 +1332,7 @@ function copiar(tipo) {
     });
     txt+=`\nTOTAL: ${R(D.gastos.reduce((s,g)=>s+Number(g.valor),0))}`;
   } else if(tipo==='igui') {
-    const igui=D.gastos.filter(g=>g.categoria==='Loja - iGUi');
+    const igui=D.gastos.filter(g=>g.categoria==='Loja - iGUi (reembolso)');
     txt=`REEMBOLSO iGUi\nExportado: ${new Date().toLocaleString('pt-BR')}\n\n`;
     igui.sort((a,b)=>a.data.localeCompare(b.data)).forEach(g=>{
       const c=CARTOES[g.cartao]||{};
