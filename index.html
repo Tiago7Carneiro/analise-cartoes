@@ -474,19 +474,18 @@ function renderHome() {
   document.getElementById('header-mes').textContent = n.toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
 
   let totalGeral=0, totalIgui=0, countIgui=0;
-  // Coleta todas as faturas abertas (próxima de cada cartão)
-  const faturasAbertas = new Set(Object.keys(CARTOES).map(k => getFaturaAbertaCartao(k)));
+  // Coleta a fatura aberta de cada cartão
+  const faturasAbertasPorCartao = {};
   Object.keys(CARTOES).forEach(k => {
-    const fk = getFaturaAbertaCartao(k);
-    totalGeral += getTotaisFatura(k,fk).total;
+    faturasAbertasPorCartao[k] = getFaturaAbertaCartao(k);
+    totalGeral += getTotaisFatura(k, faturasAbertasPorCartao[k]).total;
   });
-  // iGUi: soma todas as parcelas iGUi que caem em qualquer fatura ainda em aberto (não só a próxima)
-  // "Em aberto" = fatura cujo mês de vencimento é >= mês atual
-  const mesAtualKey = mesAtual();
+  // iGUi: soma só as parcelas que caem na fatura em aberto ATUAL de cada cartão
   D.gastos.forEach(g => {
     if(g.categoria !== 'Loja - iGUi (reembolso)') return;
+    const faturaAbertoDoCartao = faturasAbertasPorCartao[g.cartao];
     getParcelas(g).forEach(p => {
-      if(p.fk >= mesAtualKey) { totalIgui += p.val; countIgui++; }
+      if(p.fk === faturaAbertoDoCartao) { totalIgui += p.val; countIgui++; }
     });
   });
 
