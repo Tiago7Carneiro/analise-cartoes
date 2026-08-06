@@ -549,7 +549,7 @@ function renderHome() {
   const mes = mesAtual();
   const fixosAlerta = (D.fixos||[]).filter(f => {
     if (!fixoAtivoNoMes(f, mes)) return false;
-    if (f.forma !== 'pix') return false;
+    if (getFormaEfetiva(f, mes) !== 'pix') return false;
     if ((f.confirmacoes||{})[mes]) return false; // já pago
     const vencDate = new Date(n.getFullYear(), n.getMonth(), f.vencDia);
     const dias = Math.ceil((vencDate - n) / 86400000);
@@ -1103,13 +1103,19 @@ function fixoAtivoNoMes(f, mesKey) {
   return Array.isArray(f.meses) && f.meses.includes(m);
 }
 
+// Retorna a forma de pagamento efetiva daquele mês: usa a confirmada se existir, senão o padrão cadastrado
+function getFormaEfetiva(f, mesKey) {
+  const conf = (f.confirmacoes||{})[mesKey];
+  return conf && conf.forma ? conf.forma : f.forma;
+}
+
 function getFixosMes(mesKey) {
   return D.fixos.filter(f => fixoAtivoNoMes(f, mesKey));
 }
 
 function totalFixosPix(mesKey) {
   return getFixosMes(mesKey)
-    .filter(f => f.forma === 'pix')
+    .filter(f => getFormaEfetiva(f, mesKey) === 'pix')
     .reduce((s, f) => {
       const conf = (f.confirmacoes||{})[mesKey];
       return s + (conf ? Number(conf.valorReal) : Number(f.valorEst));
@@ -1122,13 +1128,17 @@ function renderFixos(el) {
   const hoje = new Date();
   const fixosMes = getFixosMes(mes);
   const totalPix = totalFixosPix(mes);
-  const totalCartao = getFixosMes(mes).filter(f=>f.forma!=='pix').reduce((s,f)=>s+Number(f.valorEst),0);
-  const pagosPix = fixosMes.filter(f=>f.forma==='pix'&&(f.confirmacoes||{})[mes]).length;
+  const totalCartao = fixosMes.filter(f=>getFormaEfetiva(f,mes)!=='pix').reduce((s,f)=>{
+    const conf = (f.confirmacoes||{})[mes];
+    return s + Number(conf ? conf.valorReal : f.valorEst);
+  },0);
+  const pixDoMes = fixosMes.filter(f=>getFormaEfetiva(f,mes)==='pix');
+  const pagosPix = pixDoMes.filter(f=>(f.confirmacoes||{})[mes]).length;
 
   el.innerHTML = `
     <div style="margin-bottom:12px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-        <div class="metric"><div class="m-label">Fixos por Pix/boleto</div><div class="m-val">${R(totalPix)}</div><div class="m-sub">${pagosPix}/${fixosMes.filter(f=>f.forma==='pix').length} pagos</div></div>
+        <div class="metric"><div class="m-label">Fixos por Pix/boleto</div><div class="m-val">${R(totalPix)}</div><div class="m-sub">${pagosPix}/${pixDoMes.length} pagos</div></div>
         <div class="metric"><div class="m-label">Fixos no cartão</div><div class="m-val">${R(totalCartao)}</div><div class="m-sub">já na fatura</div></div>
       </div>
       <div class="alert alert-info" style="font-size:13px">Total fixo do mês: <strong>${R(totalPix+totalCartao)}</strong> · Pix: ${R(totalPix)} · Cartão: ${R(totalCartao)}</div>
@@ -1147,7 +1157,7 @@ function renderFixos(el) {
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
           <div>
             <div style="font-size:14px;font-weight:500">${f.desc}</div>
-            <div style="font-size:12px;color:var(--text2)">Vence dia ${f.vencDia} · ${R(f.valorEst)} · ${f.forma==='pix'?'Pix/boleto':'Cartão de crédito'}${f.obs?' · '+f.obs:''}</div>
+            <div style="font-size:12px;color:var(--text2)">Vence dia ${f.vencDia} · ${R(f.valorEst)} · ${f.forma==='pix'?'Pix/boleto':'Cartão de crédito'} (padrão)${f.obs?' · '+f.obs:''}</div>
           </div>
           <div style="display:flex;gap:6px">
             <button class="action-btn" onclick="editarFixo('${f.id}')">✏️</button>
@@ -1162,27 +1172,34 @@ function renderFixos(el) {
 
 function renderFixoItem(f, mes) {
   const conf = (f.confirmacoes||{})[mes];
+  const formaEfetiva = getFormaEfetiva(f, mes);
   const hoje = new Date();
   const vencDate = new Date(hoje.getFullYear(), hoje.getMonth(), f.vencDia);
   const diasVenc = Math.ceil((vencDate - hoje) / 86400000);
   const vencido = diasVenc < 0;
   const urgente = diasVenc >= 0 && diasVenc <= 3;
   const pago = !!conf;
-  const formaLabel = f.forma === 'pix' ? '💸 Pix/boleto' : '💳 Cartão';
+  const formaLabel = formaEfetiva === 'pix' ? '💸 Pix/boleto' : '💳 Cartão';
+  const formaMudou = conf && conf.forma && conf.forma !== f.forma;
 
   let statusBadge = '';
-  if (f.forma === 'pix') {
-    if (pago) statusBadge = `<span class="badge badge-green">✓ pago ${conf.valorReal !== f.valorEst ? R(conf.valorReal) : ''}</span>`;
+  if (formaEfetiva === 'pix') {
+    if (pago) statusBadge = `<span class="badge badge-green">✓ pago ${R(conf.valorReal)}</span>`;
     else if (vencido) statusBadge = `<span class="badge badge-red">vencido</span>`;
     else if (urgente) statusBadge = `<span class="badge badge-amber">vence ${diasVenc===0?'hoje':`em ${diasVenc}d`}</span>`;
     else statusBadge = `<span class="badge badge-gray">vence dia ${f.vencDia}</span>`;
   } else {
-    statusBadge = `<span class="badge badge-blue">na fatura</span>`;
+    statusBadge = pago
+      ? `<span class="badge badge-blue">✓ confirmado no cartão</span>`
+      : `<span class="badge badge-blue">na fatura</span>`;
   }
+  if (formaMudou) statusBadge += ` <span class="badge badge-gray" style="font-size:10px">forma alterada este mês</span>`;
 
-  const btnConfirmar = f.forma === 'pix' && !pago
+  // Botão de confirmar aparece sempre que ainda não foi confirmado — mesmo para itens padrão "cartão",
+  // pois o pagamento real pode ter sido diferente do planejado naquele mês
+  const btnConfirmar = !pago
     ? `<button class="btn-sec" style="font-size:12px;padding:6px 12px;margin-top:8px;width:100%" onclick="confirmarPagamentoFixo('${f.id}','${mes}')">✓ Confirmar pagamento</button>`
-    : pago ? `<button class="btn-sec" style="font-size:11px;padding:4px 10px;color:var(--text3)" onclick="desfazerPagamentoFixo('${f.id}','${mes}')">Desfazer</button>` : '';
+    : `<button class="btn-sec" style="font-size:11px;padding:4px 10px;color:var(--text3)" onclick="desfazerPagamentoFixo('${f.id}','${mes}')">Desfazer</button>`;
 
   return `<div class="card" style="margin-bottom:10px;${pago?'opacity:0.75':''}">
     <div style="display:flex;justify-content:space-between;align-items:flex-start">
@@ -1202,14 +1219,45 @@ function renderFixoItem(f, mes) {
 function confirmarPagamentoFixo(id, mes) {
   const f = D.fixos.find(x=>x.id===id);
   if (!f) return;
-  const valorInput = prompt(`Confirmar pagamento de "${f.desc}"\nValor estimado: ${R(f.valorEst)}\n\nDigite o valor real pago (ou deixe vazio para usar o estimado):`, String(f.valorEst).replace('.',','));
-  if (valorInput === null) return; // cancelou
-  const valorReal = parseMoeda(valorInput) || f.valorEst;
-  if (!f.confirmacoes) f.confirmacoes = {};
-  f.confirmacoes[mes] = { valorReal, pagoEm: new Date().toISOString() };
-  save();
-  renderFatTab();
-  showToast(`${f.desc} marcado como pago!`);
+
+  document.getElementById('dlg-title').textContent = `Confirmar: ${f.desc}`;
+  document.getElementById('dlg-msg').innerHTML = `
+    <div style="text-align:left">
+      <p style="font-size:13px;color:var(--text2);margin-bottom:10px">Valor estimado: ${R(f.valorEst)}</p>
+      <label class="field-label" style="margin-top:0">Valor real pago *</label>
+      <input type="text" inputmode="decimal" id="cf-valor" value="${R(f.valorEst)}">
+      <label class="field-label">Como foi pago? *</label>
+      <select id="cf-forma">
+        <option value="pix" ${f.forma==='pix'?'selected':''}>💸 Pix / Boleto (saída da conta)</option>
+        <option value="cartao" ${f.forma==='cartao'?'selected':''}>💳 Cartão de crédito (entra na fatura)</option>
+      </select>
+      <p style="font-size:11px;color:var(--text3);margin-top:6px">Se pagou diferente do habitual, ajuste aqui — isso não altera o cadastro padrão, só a confirmação deste mês.</p>
+    </div>
+  `;
+  document.getElementById('dlg-confirm-wrap').style.display = 'none';
+  document.getElementById('dlg-ok').textContent = 'Confirmar pagamento';
+  document.getElementById('dlg-ok').style.background = 'var(--text)';
+  document.getElementById('dlg-ok').style.color = 'var(--bg)';
+  document.getElementById('dlg-ok').disabled = false;
+  document.getElementById('dlg-ok').style.opacity = 1;
+  dlgRequiredWord = null;
+  dlgCb = () => {
+    const valorReal = parseMoeda(document.getElementById('cf-valor')?.value) || f.valorEst;
+    const formaReal = document.getElementById('cf-forma')?.value || f.forma;
+    if (!f.confirmacoes) f.confirmacoes = {};
+    f.confirmacoes[mes] = { valorReal, forma: formaReal, pagoEm: new Date().toISOString() };
+    save();
+    renderFatTab();
+    showToast(`${f.desc} marcado como pago!`);
+  };
+  document.getElementById('overlay').classList.add('show');
+  setTimeout(() => {
+    const vEl = document.getElementById('cf-valor');
+    if (vEl) {
+      vEl.addEventListener('input', () => maskMoeda(vEl));
+      vEl.select();
+    }
+  }, 100);
 }
 
 function desfazerPagamentoFixo(id, mes) {
@@ -1604,13 +1652,16 @@ function gerarPDFFinalMes() {
 
   function calcularMes(mesKey) {
     const fixosMes = getFixosMes(mesKey);
-    const fixosPix = fixosMes.filter(f=>f.forma==='pix');
-    const fixosCartao = fixosMes.filter(f=>f.forma!=='pix');
+    const fixosPix = fixosMes.filter(f=>getFormaEfetiva(f,mesKey)==='pix');
+    const fixosCartao = fixosMes.filter(f=>getFormaEfetiva(f,mesKey)!=='pix');
     const totalFixosPixVal = fixosPix.reduce((s,f) => {
       const conf = (f.confirmacoes||{})[mesKey];
       return s + (conf ? Number(conf.valorReal) : Number(f.valorEst));
     }, 0);
-    const totalFixosCartaoVal = fixosCartao.reduce((s,f)=>s+Number(f.valorEst),0);
+    const totalFixosCartaoVal = fixosCartao.reduce((s,f) => {
+      const conf = (f.confirmacoes||{})[mesKey];
+      return s + Number(conf ? conf.valorReal : f.valorEst);
+    }, 0);
 
     let totalCartoes = 0, totalIguiMes = 0;
     Object.keys(CARTOES).forEach(k => {
