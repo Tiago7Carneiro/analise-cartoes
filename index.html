@@ -88,6 +88,7 @@
   .alert-warn { background: var(--amber-bg); color: var(--amber); }
   .alert-ok { background: var(--green-bg); color: var(--green); }
   .alert-info { background: var(--blue-bg); color: var(--blue); }
+  .alert-red { background: var(--red-bg); color: var(--red); border: 1.5px solid var(--red); }
   
   /* Form */
   .field-label { font-size: 13px; font-weight: 500; color: var(--text2); margin-bottom: 6px; margin-top: 14px; display: block; }
@@ -325,7 +326,8 @@ const TITULARES = ['Tiago','Danielle','Henrique','Lia Rosa','Família'];
 const KEY = 'gestor_tiago_v3';
 let D = {gastos:[], faturas:[]};
 try { const r = localStorage.getItem(KEY); if(r) D = JSON.parse(r); } catch(e){}
-if (!D.planejados) D.planejados = []; // compatibilidade com backups/dados salvos antes desse recurso existir
+if (!D.planejados) D.planejados = [];
+if (!D.fixos) D.fixos = []; // gastos fixos mensais (contas, boletos, etc.)
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(D)); } catch(e){} };
 
 const R = (v,d=2) => Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:d,maximumFractionDigits:d});
@@ -495,9 +497,21 @@ function renderHome() {
   const carrefourFk = getFaturaAbertaCartao('carrefour');
   const carrefourMes = D.gastos.filter(g => g.cartao==='carrefour' && getParcelas(g).some(p=>p.fk===carrefourFk&&p.num===1)).length;
 
+  // Dias até o fechamento da fatura aberta do Carrefour (fecha 7 dias antes do vencimento, dia 23)
+  const [cfy, cfm] = carrefourFk.split('-').map(Number);
+  const carrefourFechaData = new Date(cfy, cfm-1, CARTOES.carrefour.venc-7);
+  const diasParaFecharCarrefour = Math.ceil((carrefourFechaData - n) / 86400000);
+
   // Alertas — só Carrefour (C6 já aparece no indicador de cada cartão abaixo)
   let alertas = '';
-  if(carrefourMes===0) alertas += `<div class="alert alert-warn">⚠️ Carrefour sem compras na fatura aberta (${fmtFatura(carrefourFk)}) — risco de anuidade.</div>`;
+  if(carrefourMes===0) {
+    const urgenteCarrefour = diasParaFecharCarrefour >= 0 && diasParaFecharCarrefour <= 5;
+    if (urgenteCarrefour) {
+      alertas += `<div class="alert alert-red" style="font-weight:600">🚨 URGENTE: Carrefour sem compras e a fatura fecha em ${diasParaFecharCarrefour===0?'HOJE':`${diasParaFecharCarrefour} dia(s)`} (${fmtFatura(carrefourFk)})! Risco de pagar anuidade.</div>`;
+    } else {
+      alertas += `<div class="alert alert-warn">⚠️ Carrefour sem compras na fatura aberta (${fmtFatura(carrefourFk)}) — risco de anuidade.</div>`;
+    }
+  }
 
   // Cartões
   let cartoesHtml = '';
@@ -505,10 +519,14 @@ function renderHome() {
     const fk = getFaturaAbertaCartao(k);
     const {total} = getTotaisFatura(k,fk);
     let fd;
-    // Calcula a data de fechamento referente a essa fatura em aberto (mês anterior ao vencimento)
     const [fy, fm] = fk.split('-').map(Number);
-    if(c.fechaDia) fd = new Date(fy, fm-1, c.fechaDia);
-    else fd = new Date(fy, fm-1, c.venc-7);
+    if(c.fechaDia) {
+      // Para BB: fatura Ago/26 (2026-08) fecha dia 30 de JULHO (fm-2 porque fm é 1-indexed)
+      fd = new Date(fy, fm-2, c.fechaDia);
+    } else {
+      // Para demais: fecha 7 dias antes do vencimento, no mesmo mês da fatura
+      fd = new Date(fy, fm-1, c.venc-7);
+    }
     const dias = Math.ceil((fd-n)/86400000);
     const fdStr = fd.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
     const urgente = dias>=0&&dias<=3;
@@ -527,17 +545,33 @@ function renderHome() {
   const ultimos = D.gastos.slice(-4).reverse();
   let ultimosHtml = ultimos.length ? ultimos.map(g=>gastoItemHTML(g,true)).join('') : '<div class="empty">Nenhum lançamento ainda.</div>';
 
+  // Fixos vencendo nos próximos 5 dias
+  const mes = mesAtual();
+  const fixosAlerta = (D.fixos||[]).filter(f => {
+    if (!fixoAtivoNoMes(f, mes)) return false;
+    if (f.forma !== 'pix') return false;
+    if ((f.confirmacoes||{})[mes]) return false; // já pago
+    const vencDate = new Date(n.getFullYear(), n.getMonth(), f.vencDia);
+    const dias = Math.ceil((vencDate - n) / 86400000);
+    return dias >= 0 && dias <= 5;
+  }).sort((a,b)=>a.vencDia-b.vencDia);
+
+  const fixosAlertaHtml = fixosAlerta.length ? `
+    <div class="alert alert-warn" style="margin-bottom:12px">
+      ⏰ <strong>${fixosAlerta.length} conta(s) vencendo em breve:</strong>
+      ${fixosAlerta.map(f=>{
+        const dias = Math.ceil((new Date(n.getFullYear(),n.getMonth(),f.vencDia)-n)/86400000);
+        return `<div style="margin-top:4px;font-size:13px">${f.desc} — ${R(f.valorEst)} — ${dias===0?'<strong>hoje</strong>':`em ${dias}d (dia ${f.vencDia})`}</div>`;
+      }).join('')}
+      <button class="btn-sec" style="margin-top:8px;font-size:12px;padding:5px 12px" onclick="setFatTab('fixos');goPageById('faturas')">Ver compromissos →</button>
+    </div>` : '';
+
   document.getElementById('page-home').innerHTML = `
     ${alertas}
+    ${fixosAlertaHtml}
     <div class="metric-grid">
       <div class="metric"><div class="m-label">Total faturas em aberto</div><div class="m-val">${R(totalGeral)}</div><div class="m-sub">próximos vencimentos de cada cartão</div></div>
       <div class="metric" style="background:var(--green-bg);border-color:var(--green)"><div class="m-label" style="color:var(--green)">💰 Prévia reembolso iGUi</div><div class="m-val" style="color:var(--green)">${R(totalIgui)}</div><div class="m-sub" style="color:var(--green)">${countIgui} lançamento(s) · faturas em aberto</div></div>
-    </div>
-    <div class="metric" style="margin-bottom:12px">
-      <div class="m-label">C6 — meta anuidade</div>
-      <div class="m-val">${R(c6Mes)} <span style="font-size:14px;font-weight:400;color:var(--text2)">/ R$10.000</span></div>
-      <div class="progress"><div class="progress-fill" style="width:${c6Pct}%;background:${c6Pct>=100?'var(--green)':'var(--amber)'}"></div></div>
-      <div class="m-sub">${c6Pct}% — ${c6Pct>=100?'meta atingida ✓':`faltam ${R(10000-c6Mes)}`}</div>
     </div>
     <div class="card"><div class="card-title">Situação dos cartões</div>${cartoesHtml}</div>
     <div class="card"><div class="card-title">Últimos lançamentos</div>${ultimosHtml}</div>
@@ -775,11 +809,11 @@ let faturasTab = 'abertas';
 function renderFaturas() {
   document.getElementById('page-faturas').innerHTML = `
     <div class="sec-title">Faturas</div>
-    <div class="tabs">
-      <button class="tab ${faturasTab==='abertas'?'active':''}" onclick="setFatTab('abertas')">Em aberto</button>
-      <button class="tab ${faturasTab==='planejar'?'active':''}" onclick="setFatTab('planejar')">Planejar</button>
-      <button class="tab ${faturasTab==='fechar'?'active':''}" onclick="setFatTab('fechar')">Fechar</button>
-      <button class="tab ${faturasTab==='hist'?'active':''}" onclick="setFatTab('hist')">Histórico</button>
+    <div class="tabs" style="gap:2px">
+      <button class="tab ${faturasTab==='abertas'?'active':''}" onclick="setFatTab('abertas')" style="font-size:11px;padding:8px 4px">Em aberto</button>
+      <button class="tab ${faturasTab==='fixos'?'active':''}" onclick="setFatTab('fixos')" style="font-size:11px;padding:8px 4px">Fixos</button>
+      <button class="tab ${faturasTab==='fechar'?'active':''}" onclick="setFatTab('fechar')" style="font-size:11px;padding:8px 4px">Fechar</button>
+      <button class="tab ${faturasTab==='hist'?'active':''}" onclick="setFatTab('hist')" style="font-size:11px;padding:8px 4px">Histórico</button>
     </div>
     <div id="fat-content"></div>
   `;
@@ -789,7 +823,7 @@ function renderFaturas() {
 function setFatTab(t) {
   faturasTab=t;
   document.querySelectorAll('#page-faturas .tab').forEach((el,i)=>{
-    el.classList.toggle('active',['abertas','planejar','fechar','hist'][i]===t);
+    el.classList.toggle('active',['abertas','fixos','fechar','hist'][i]===t);
   });
   renderFatTab();
 }
@@ -797,6 +831,10 @@ function setFatTab(t) {
 function renderFatTab() {
   const el = document.getElementById('fat-content');
   if(!el) return;
+  if(faturasTab==='fixos') {
+    renderFixos(el);
+    return;
+  }
   if(faturasTab==='abertas') {
     const meses = getProximosMeses(4);
     let html='';
@@ -809,8 +847,6 @@ function renderFatTab() {
       if(totalMes>0) html+=`<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:8px"><strong>Fatura ${fmtFatura(mes)}</strong><strong>${R(totalMes)}</strong></div>${linhas}</div>`;
     });
     el.innerHTML = html||'<div class="empty">Nenhum lançamento nos próximos meses.</div>';
-  } else if(faturasTab==='planejar') {
-    renderPlanejar(el);
   } else if(faturasTab==='fechar') {
     const carOpts = Object.entries(CARTOES).map(([k,c])=>`<option value="${k}">${c.emoji} ${c.nome}</option>`).join('');
     el.innerHTML = `
@@ -1035,6 +1071,237 @@ function removerPlanejado(id) {
   renderFatTab();
 }
 
+// ============================================================
+// GASTOS FIXOS — boletos, condomínio, escola, etc.
+// Cada gasto fixo pode ser:
+//   - pagamento: Pix/boleto (saída real da conta) ou Cartão (já conta na fatura)
+//   - recorrência: mensal, bimestral, ou só em meses específicos (ex: IPTU fev-nov)
+// ============================================================
+
+const MESES_NOMES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+
+// Pré-cadastra as contas fixas do Tiago
+function inicializarFixosPadrao() {
+  if (D.fixos.length > 0) return; // só inicializa se estiver vazio
+  const fixosPadrao = [
+    {id:uid(), desc:'Escola Henrique', vencDia:5, valorEst:991.67, forma:'pix', meses:'todos', ativo:true, obs:''},
+    {id:uid(), desc:'IPTU', vencDia:6, valorEst:319.20, forma:'pix', meses:[2,3,4,5,6,7,8,9,10,11], ativo:true, obs:'Fevereiro a Novembro'},
+    {id:uid(), desc:'Condomínio Frames', vencDia:10, valorEst:2210.00, forma:'pix', meses:'todos', ativo:true, obs:''},
+    {id:uid(), desc:'Conta de Gás', vencDia:10, valorEst:160.00, forma:'pix', meses:'todos', ativo:true, obs:''},
+    {id:uid(), desc:'Empréstimo BB TCS', vencDia:15, valorEst:1500.00, forma:'pix', meses:'todos', ativo:true, obs:''},
+    {id:uid(), desc:'Plano de Saúde Sulamerica', vencDia:15, valorEst:2661.29, forma:'pix', meses:'todos', ativo:true, obs:''},
+    {id:uid(), desc:'Conta de Luz', vencDia:15, valorEst:600.00, forma:'pix', meses:'todos', ativo:true, obs:''},
+  ];
+  D.fixos = fixosPadrao;
+  save();
+}
+
+function fixoAtivoNoMes(f, mesKey) {
+  const [y, m] = mesKey.split('-').map(Number);
+  if (!f.ativo) return false;
+  if (f.meses === 'todos') return true;
+  return Array.isArray(f.meses) && f.meses.includes(m);
+}
+
+function getFixosMes(mesKey) {
+  return D.fixos.filter(f => fixoAtivoNoMes(f, mesKey));
+}
+
+function totalFixosPix(mesKey) {
+  return getFixosMes(mesKey)
+    .filter(f => f.forma === 'pix')
+    .reduce((s, f) => {
+      const conf = (f.confirmacoes||{})[mesKey];
+      return s + (conf ? Number(conf.valorReal) : Number(f.valorEst));
+    }, 0);
+}
+
+function renderFixos(el) {
+  inicializarFixosPadrao();
+  const mes = mesAtual();
+  const hoje = new Date();
+  const fixosMes = getFixosMes(mes);
+  const totalPix = totalFixosPix(mes);
+  const totalCartao = getFixosMes(mes).filter(f=>f.forma!=='pix').reduce((s,f)=>s+Number(f.valorEst),0);
+  const pagosPix = fixosMes.filter(f=>f.forma==='pix'&&(f.confirmacoes||{})[mes]).length;
+
+  el.innerHTML = `
+    <div style="margin-bottom:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+        <div class="metric"><div class="m-label">Fixos por Pix/boleto</div><div class="m-val">${R(totalPix)}</div><div class="m-sub">${pagosPix}/${fixosMes.filter(f=>f.forma==='pix').length} pagos</div></div>
+        <div class="metric"><div class="m-label">Fixos no cartão</div><div class="m-val">${R(totalCartao)}</div><div class="m-sub">já na fatura</div></div>
+      </div>
+      <div class="alert alert-info" style="font-size:13px">Total fixo do mês: <strong>${R(totalPix+totalCartao)}</strong> · Pix: ${R(totalPix)} · Cartão: ${R(totalCartao)}</div>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div style="font-size:14px;font-weight:600">Compromissos de ${MESES_NOMES[hoje.getMonth()]}</div>
+      <button class="btn-sec" style="font-size:12px;padding:6px 12px" onclick="abrirNovoFixo()">+ Novo</button>
+    </div>
+
+    ${fixosMes.sort((a,b)=>a.vencDia-b.vencDia).map(f => renderFixoItem(f, mes)).join('')}
+
+    <div style="margin-top:20px">
+      <div style="font-size:13px;font-weight:600;color:var(--text2);margin-bottom:8px">TODOS OS GASTOS FIXOS CADASTRADOS</div>
+      ${D.fixos.map(f => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <div style="font-size:14px;font-weight:500">${f.desc}</div>
+            <div style="font-size:12px;color:var(--text2)">Vence dia ${f.vencDia} · ${R(f.valorEst)} · ${f.forma==='pix'?'Pix/boleto':'Cartão de crédito'}${f.obs?' · '+f.obs:''}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="action-btn" onclick="editarFixo('${f.id}')">✏️</button>
+            <button class="action-btn" onclick="removerFixo('${f.id}')">🗑️</button>
+          </div>
+        </div>`).join('')}
+    </div>
+
+    <div id="fixo-form-overlay" style="display:none"></div>
+  `;
+}
+
+function renderFixoItem(f, mes) {
+  const conf = (f.confirmacoes||{})[mes];
+  const hoje = new Date();
+  const vencDate = new Date(hoje.getFullYear(), hoje.getMonth(), f.vencDia);
+  const diasVenc = Math.ceil((vencDate - hoje) / 86400000);
+  const vencido = diasVenc < 0;
+  const urgente = diasVenc >= 0 && diasVenc <= 3;
+  const pago = !!conf;
+  const formaLabel = f.forma === 'pix' ? '💸 Pix/boleto' : '💳 Cartão';
+
+  let statusBadge = '';
+  if (f.forma === 'pix') {
+    if (pago) statusBadge = `<span class="badge badge-green">✓ pago ${conf.valorReal !== f.valorEst ? R(conf.valorReal) : ''}</span>`;
+    else if (vencido) statusBadge = `<span class="badge badge-red">vencido</span>`;
+    else if (urgente) statusBadge = `<span class="badge badge-amber">vence ${diasVenc===0?'hoje':`em ${diasVenc}d`}</span>`;
+    else statusBadge = `<span class="badge badge-gray">vence dia ${f.vencDia}</span>`;
+  } else {
+    statusBadge = `<span class="badge badge-blue">na fatura</span>`;
+  }
+
+  const btnConfirmar = f.forma === 'pix' && !pago
+    ? `<button class="btn-sec" style="font-size:12px;padding:6px 12px;margin-top:8px;width:100%" onclick="confirmarPagamentoFixo('${f.id}','${mes}')">✓ Confirmar pagamento</button>`
+    : pago ? `<button class="btn-sec" style="font-size:11px;padding:4px 10px;color:var(--text3)" onclick="desfazerPagamentoFixo('${f.id}','${mes}')">Desfazer</button>` : '';
+
+  return `<div class="card" style="margin-bottom:10px;${pago?'opacity:0.75':''}">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div>
+        <div style="font-size:15px;font-weight:600">${f.desc}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px">${formaLabel} · est. ${R(f.valorEst)}</div>
+        <div style="margin-top:5px">${statusBadge}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:17px;font-weight:700">${R(pago ? conf.valorReal : f.valorEst)}</div>
+      </div>
+    </div>
+    ${btnConfirmar}
+  </div>`;
+}
+
+function confirmarPagamentoFixo(id, mes) {
+  const f = D.fixos.find(x=>x.id===id);
+  if (!f) return;
+  const valorInput = prompt(`Confirmar pagamento de "${f.desc}"\nValor estimado: ${R(f.valorEst)}\n\nDigite o valor real pago (ou deixe vazio para usar o estimado):`, String(f.valorEst).replace('.',','));
+  if (valorInput === null) return; // cancelou
+  const valorReal = parseMoeda(valorInput) || f.valorEst;
+  if (!f.confirmacoes) f.confirmacoes = {};
+  f.confirmacoes[mes] = { valorReal, pagoEm: new Date().toISOString() };
+  save();
+  renderFatTab();
+  showToast(`${f.desc} marcado como pago!`);
+}
+
+function desfazerPagamentoFixo(id, mes) {
+  const f = D.fixos.find(x=>x.id===id);
+  if (!f || !f.confirmacoes) return;
+  delete f.confirmacoes[mes];
+  save();
+  renderFatTab();
+  showToast('Pagamento desfeito');
+}
+
+function abrirNovoFixo(id) {
+  const f = id ? D.fixos.find(x=>x.id===id) : null;
+  const mesesCheckboxes = MESES_NOMES.map((nome, i) => {
+    const m = i+1;
+    const checked = !f ? true : (f.meses === 'todos' ? true : (Array.isArray(f.meses) && f.meses.includes(m)));
+    return `<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;margin:2px 4px 2px 0">
+      <input type="checkbox" value="${m}" ${checked?'checked':''} class="mes-check"> ${nome.slice(0,3)}
+    </label>`;
+  }).join('');
+
+  // Usa o overlay do dialog existente para o formulário
+  document.getElementById('dlg-title').textContent = f ? 'Editar gasto fixo' : 'Novo gasto fixo';
+  document.getElementById('dlg-msg').innerHTML = `
+    <div style="text-align:left">
+      <label class="field-label" style="margin-top:0">Descrição *</label>
+      <input type="text" id="ff-desc" value="${f?f.desc:''}" placeholder="Ex: Condomínio, IPTU...">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label class="field-label">Dia de vencimento *</label>
+        <input type="number" id="ff-venc" min="1" max="31" value="${f?f.vencDia:10}"></div>
+        <div><label class="field-label">Valor estimado *</label>
+        <input type="text" inputmode="decimal" id="ff-valor" value="${f?R(f.valorEst):''}" placeholder="0,00"></div>
+      </div>
+      <label class="field-label">Forma de pagamento *</label>
+      <select id="ff-forma">
+        <option value="pix" ${!f||f.forma==='pix'?'selected':''}>💸 Pix / Boleto (saída da conta)</option>
+        <option value="cartao" ${f&&f.forma==='cartao'?'selected':''}>💳 Cartão de crédito (já na fatura)</option>
+      </select>
+      <label class="field-label">Meses em que ocorre</label>
+      <div style="margin:4px 0 8px">${mesesCheckboxes}</div>
+      <label class="field-label">Observação</label>
+      <input type="text" id="ff-obs" value="${f?f.obs||'':''}" placeholder="Opcional...">
+    </div>
+  `;
+  document.getElementById('dlg-confirm-wrap').style.display = 'none';
+  document.getElementById('dlg-ok').textContent = f ? 'Salvar' : 'Adicionar';
+  document.getElementById('dlg-ok').style.background = 'var(--text)';
+  document.getElementById('dlg-ok').style.color = 'var(--bg)';
+  document.getElementById('dlg-ok').disabled = false;
+  document.getElementById('dlg-ok').style.opacity = 1;
+  dlgRequiredWord = null;
+  dlgCb = () => {
+    const desc = document.getElementById('ff-desc')?.value.trim();
+    const vencDia = parseInt(document.getElementById('ff-venc')?.value);
+    const valorEst = parseMoeda(document.getElementById('ff-valor')?.value);
+    const forma = document.getElementById('ff-forma')?.value;
+    const obs = document.getElementById('ff-obs')?.value.trim();
+    const checks = [...document.querySelectorAll('.mes-check:checked')].map(c=>parseInt(c.value));
+    const meses = checks.length === 12 ? 'todos' : checks;
+    if (!desc || !vencDia || !valorEst) { showToast('Preencha os campos obrigatórios'); return; }
+    if (f) {
+      Object.assign(f, {desc, vencDia, valorEst, forma, obs, meses});
+    } else {
+      D.fixos.push({id:uid(), desc, vencDia, valorEst, forma, obs, meses, ativo:true, confirmacoes:{}});
+    }
+    save();
+    renderFatTab();
+    showToast(f ? 'Gasto fixo atualizado!' : 'Gasto fixo adicionado!');
+  };
+  document.getElementById('overlay').classList.add('show');
+  setTimeout(() => {
+    const vEl = document.getElementById('ff-valor');
+    if (vEl) vEl.addEventListener('input', () => maskMoeda(vEl));
+  }, 100);
+}
+
+function editarFixo(id) { abrirNovoFixo(id); }
+
+function removerFixo(id) {
+  const f = D.fixos.find(x=>x.id===id);
+  if (!f) return;
+  document.getElementById('dlg-title').textContent = 'Remover gasto fixo';
+  document.getElementById('dlg-msg').textContent = `Remover "${f.desc}" da lista? Os históricos de pagamento serão perdidos.`;
+  document.getElementById('dlg-ok').textContent = 'Remover';
+  document.getElementById('dlg-ok').style.background = 'var(--red-bg)';
+  document.getElementById('dlg-ok').style.color = 'var(--red)';
+  document.getElementById('dlg-confirm-wrap').style.display = 'none';
+  dlgRequiredWord = null;
+  dlgCb = () => { D.fixos = D.fixos.filter(x=>x.id!==id); save(); renderFatTab(); showToast('Removido'); };
+  document.getElementById('overlay').classList.add('show');
+}
+
 // MAIS
 function renderMais() {
   const mesesDisponiveis = [...new Set([
@@ -1051,14 +1318,24 @@ function renderMais() {
       <label class="field-label" style="margin-top:0">Fatura de referência</label>
       <select id="exp-mes">${mesesDisponiveis.slice().reverse().map(m=>`<option value="${m}" ${m===mesAtual()?'selected':''}>${fmtFatura(m)}</option>`).join('')}</select>
 
-      <button class="btn btn-accent" style="margin-top:14px;margin-bottom:8px" onclick="gerarPDFFechamento()">📊 Fechamento por categoria</button>
-      <p style="font-size:12px;color:var(--text3);margin:-4px 0 10px 2px">Total e % de cada categoria, por cartão, na fatura selecionada</p>
-
+      <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Relatórios gerais</div>
+      <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDFFechamento()">📊 Fechamento por categoria</button>
+      <p style="font-size:12px;color:var(--text3);margin:-4px 0 10px 2px">Total e % de cada categoria, detalhado por cartão</p>
       <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDFIgui()">🏢 Reembolso iGUi do mês</button>
       <p style="font-size:12px;color:var(--text3);margin:-4px 0 10px 2px">Lista detalhada para solicitar reembolso à empresa</p>
-
       <button class="btn btn-accent" style="margin-top:0;margin-bottom:8px" onclick="gerarPDFEvolutivo()">📈 Análise evolutiva do ano</button>
-      <p style="font-size:12px;color:var(--text3);margin:-4px 0 0 2px">Comparativo mês a mês, por categoria e por cartão</p>
+      <p style="font-size:12px;color:var(--text3);margin:-4px 0 14px 2px">Comparativo mês a mês, por categoria e por cartão</p>
+
+      <div style="font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Relatório por cartão</div>
+      <label class="field-label" style="margin-top:0">Cartão</label>
+      <select id="exp-cartao">
+        ${Object.entries(CARTOES).map(([k,c])=>`<option value="${k}">${c.emoji} ${c.nome}</option>`).join('')}
+      </select>
+      <button class="btn btn-accent" style="margin-top:10px;margin-bottom:4px" onclick="gerarPDFCartao()">🧾 Relatório detalhado do cartão</button>
+      <p style="font-size:12px;color:var(--text3);margin:0 0 14px 2px">Gastos por categoria (detalhado) + cronológico — ideal para conferir a fatura</p>
+
+      <button class="btn btn-secondary" style="margin-top:4px;font-size:13px" onclick="gerarPDFFinalMes()">🧮 Relatório final do mês (fixos + cartão)</button>
+      <p style="font-size:11px;color:var(--text3);margin:4px 0 0 2px">Junta contas fixas e cartão · inclui prévia dos próximos meses</p>
     </div>
 
     <div class="card">
@@ -1232,7 +1509,178 @@ function gerarPDFIgui() {
   imprimirHTML(html);
 }
 
-// RELATÓRIO 3: Análise evolutiva do ano — comparação mês a mês
+// RELATÓRIO POR CARTÃO — dois blocos: por categoria detalhado + cronológico
+function gerarPDFCartao() {
+  const mes = document.getElementById('exp-mes')?.value || mesAtual();
+  const ck = document.getElementById('exp-cartao')?.value;
+  const c = CARTOES[ck];
+  if (!c) return;
+
+  const {gastos, total} = getTotaisFatura(ck, mes);
+  if (!gastos.length) { showToast('Nenhum lançamento nesta fatura para este cartão'); return; }
+
+  // BLOCO 1: Por categoria — cada categoria com seus gastos detalhados
+  const porCategoria = {};
+  gastos.forEach(g => {
+    if (!porCategoria[g.categoria]) porCategoria[g.categoria] = [];
+    porCategoria[g.categoria].push(g);
+  });
+
+  const blocoCategoria = Object.entries(porCategoria)
+    .sort((a,b) => b[1].reduce((s,g)=>s+g.vp,0) - a[1].reduce((s,g)=>s+g.vp,0))
+    .map(([cat, itens]) => {
+      const subtotal = itens.reduce((s,g)=>s+g.vp,0);
+      const pct = total ? (subtotal/total*100) : 0;
+      const rows = itens.sort((a,b)=>a.data.localeCompare(b.data)).map(g =>
+        `<tr>
+          <td style="padding-left:16px">${fmtD(g.data)}</td>
+          <td style="padding-left:16px">${g.desc}${g.nomeFatura?` <span style="color:#888;font-size:10px">· ${g.nomeFatura}</span>`:''}</td>
+          <td style="text-align:center">${g.pt>1?`${g.pn}/${g.pt}`:'-'}</td>
+          <td style="text-align:right">${R(g.vp)}</td>
+        </tr>`
+      ).join('');
+      return `
+        <tr style="background:#e8e8e8"><td colspan="3" style="font-weight:700;padding:7px 6px">${cat}</td><td style="text-align:right;font-weight:700;padding:7px 6px">${R(subtotal)} <span style="font-size:10px;color:#555">(${pct.toFixed(1)}%)</span></td></tr>
+        ${rows}
+      `;
+    }).join('');
+
+  // BLOCO 2: Cronológico — do mais recente para o mais antigo
+  const cronologico = [...gastos].sort((a,b) => b.data.localeCompare(a.data));
+  const rowsCron = cronologico.map((g,i) =>
+    `<tr>
+      <td>${i+1}</td>
+      <td>${fmtD(g.data)}</td>
+      <td>${g.desc}${g.nomeFatura?`<br><span style="color:#888;font-size:10px">${g.nomeFatura}</span>`:''}</td>
+      <td>${g.categoria}</td>
+      <td style="text-align:center">${g.pt>1?`${g.pn}/${g.pt}`:'-'}</td>
+      <td style="text-align:right;font-weight:600">${R(g.vp)}</td>
+    </tr>`
+  ).join('');
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>
+    ${PDF_BASE_STYLE}
+    .separador{margin:28px 0 16px;border-top:3px solid #1a1a18;padding-top:12px}
+    .bloco-titulo{font-size:16px;font-weight:700;margin-bottom:4px}
+    .bloco-sub{font-size:11px;color:#666;margin-bottom:10px}
+    .aviso{background:#fff8e6;border:1px solid #f0c040;border-radius:6px;padding:8px 10px;font-size:11px;color:#7a5800;margin:10px 0}
+  </style></head><body>
+    <h1>${c.emoji} ${c.nome} — ${fmtFatura(mes)}</h1>
+    <p class="sub">Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')} · ${gastos.length} lançamento(s)</p>
+    <div class="resumo-grid">
+      <div class="resumo-box"><div class="lbl">Total registrado</div><div class="val">${R(total)}</div></div>
+      <div class="resumo-box"><div class="lbl">Lançamentos</div><div class="val">${gastos.length}</div></div>
+      <div class="resumo-box"><div class="lbl">Categorias</div><div class="val">${Object.keys(porCategoria).length}</div></div>
+    </div>
+
+    <!-- BLOCO 1 -->
+    <div class="bloco-titulo">📂 Bloco 1 — Por categoria (detalhado)</div>
+    <div class="bloco-sub">Gastos agrupados por categoria. Cada categoria mostra todos os lançamentos individuais.</div>
+    <div class="aviso">⚠️ Os valores abaixo são os totais registrados no app. Se houver diferença com a fatura do banco, use o Bloco 2 para identificar o que está faltando.</div>
+    <table><thead><tr><th>Data</th><th>Descrição</th><th style="text-align:center">Parc.</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>
+      ${blocoCategoria}
+      <tr class="total-row"><td colspan="3">TOTAL BLOCO 1</td><td style="text-align:right">${R(total)}</td></tr>
+    </tbody></table>
+
+    <!-- BLOCO 2 -->
+    <div class="separador">
+      <div class="bloco-titulo">📅 Bloco 2 — Cronológico (mais recente primeiro)</div>
+      <div class="bloco-sub">Todos os gastos em ordem de data, do mais recente ao mais antigo. Use para conferir contra o extrato do banco.</div>
+    </div>
+    <table><thead><tr><th>#</th><th>Data</th><th>Descrição</th><th>Categoria</th><th style="text-align:center">Parc.</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>
+      ${rowsCron}
+      <tr class="total-row"><td colspan="5">TOTAL BLOCO 2</td><td style="text-align:right">${R(total)}</td></tr>
+    </tbody></table>
+    <p style="margin-top:16px;font-size:11px;color:#888">Os totais dos dois blocos devem ser iguais. Se houver diferença com a fatura do banco, há lançamentos não registrados no app.</p>
+  </body></html>`;
+  imprimirHTML(html);
+}
+
+// RELATÓRIO FINAL DO MÊS — junta contas fixas + cartão, com prévia dos meses seguintes
+function gerarPDFFinalMes() {
+  const mesRef = document.getElementById('exp-mes')?.value || mesAtual();
+
+  function calcularMes(mesKey) {
+    const fixosMes = getFixosMes(mesKey);
+    const fixosPix = fixosMes.filter(f=>f.forma==='pix');
+    const fixosCartao = fixosMes.filter(f=>f.forma!=='pix');
+    const totalFixosPixVal = fixosPix.reduce((s,f) => {
+      const conf = (f.confirmacoes||{})[mesKey];
+      return s + (conf ? Number(conf.valorReal) : Number(f.valorEst));
+    }, 0);
+    const totalFixosCartaoVal = fixosCartao.reduce((s,f)=>s+Number(f.valorEst),0);
+
+    let totalCartoes = 0, totalIguiMes = 0;
+    Object.keys(CARTOES).forEach(k => {
+      const {total} = getTotaisFatura(k, mesKey);
+      totalCartoes += total;
+    });
+    D.gastos.forEach(g => {
+      if (g.categoria !== 'Loja - iGUi (reembolso)') return;
+      getParcelas(g).forEach(p => { if (p.fk === mesKey) totalIguiMes += p.val; });
+    });
+
+    const cartaoPessoal = totalCartoes - totalIguiMes;
+    const totalFinal = totalFixosPixVal + cartaoPessoal;
+
+    return { fixosPix, fixosCartao, totalFixosPixVal, totalFixosCartaoVal, totalCartoes, totalIguiMes, cartaoPessoal, totalFinal };
+  }
+
+  const atual = calcularMes(mesRef);
+
+  const fixosPixRows = atual.fixosPix.map(f => {
+    const conf = (f.confirmacoes||{})[mesRef];
+    const valor = conf ? conf.valorReal : f.valorEst;
+    return `<tr><td>${f.desc}</td><td style="text-align:center">dia ${f.vencDia}</td><td style="text-align:center">${conf?'✓ pago':'pendente'}</td><td style="text-align:right">${R(valor)}</td></tr>`;
+  }).join('');
+
+  const fixosCartaoRows = atual.fixosCartao.map(f =>
+    `<tr><td>${f.desc}</td><td style="text-align:center">dia ${f.vencDia}</td><td style="text-align:center">no cartão</td><td style="text-align:right">${R(f.valorEst)}</td></tr>`
+  ).join('');
+
+  // Prévia dos 3 meses seguintes
+  const proximosMeses = getProximosMeses(4).filter(m => m !== mesRef).slice(0,3);
+  const previaRows = proximosMeses.map(m => {
+    const calc = calcularMes(m);
+    return `<tr>
+      <td>${fmtFatura(m)}</td>
+      <td style="text-align:right">${R(calc.totalFixosPixVal)}</td>
+      <td style="text-align:right">${R(calc.cartaoPessoal)}</td>
+      <td style="text-align:right;font-weight:700">${R(calc.totalFinal)}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>${PDF_BASE_STYLE}</style></head><body>
+    <h1>Relatório final do mês</h1>
+    <p class="sub">${fmtFatura(mesRef)} · Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')}</p>
+
+    <div class="resumo-grid">
+      <div class="resumo-box"><div class="lbl">Contas fixas (Pix)</div><div class="val">${R(atual.totalFixosPixVal)}</div></div>
+      <div class="resumo-box"><div class="lbl">Cartão (pessoal)</div><div class="val">${R(atual.cartaoPessoal)}</div></div>
+      <div class="resumo-box" style="background:#f0f0ee"><div class="lbl">TOTAL DO MÊS</div><div class="val" style="font-size:19px">${R(atual.totalFinal)}</div></div>
+    </div>
+    <p style="font-size:11px;color:#888;margin:4px 0 16px">Cartão (pessoal) = total das faturas em aberto − gastos de reembolso iGUi (${R(atual.totalIguiMes)})</p>
+
+    <h2>Contas fixas — pagas por Pix/boleto</h2>
+    <table><thead><tr><th>Descrição</th><th style="text-align:center">Vencimento</th><th style="text-align:center">Status</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>${fixosPixRows || '<tr><td colspan="4" style="text-align:center;color:#999;padding:10px">Nenhuma conta fixa por Pix neste mês.</td></tr>'}
+    <tr class="total-row"><td colspan="3">Subtotal Pix</td><td style="text-align:right">${R(atual.totalFixosPixVal)}</td></tr></tbody></table>
+
+    ${atual.fixosCartao.length ? `
+    <h2>Contas fixas — pagas no cartão (já incluídas na fatura)</h2>
+    <table><thead><tr><th>Descrição</th><th style="text-align:center">Vencimento</th><th style="text-align:center">Forma</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>${fixosCartaoRows}</tbody></table>
+    <p style="font-size:11px;color:#888">Estes valores já estão contabilizados dentro do total do cartão acima — não somam separadamente.</p>` : ''}
+
+    <h2>Prévia dos próximos meses</h2>
+    <table><thead><tr><th>Mês</th><th style="text-align:right">Fixos (Pix)</th><th style="text-align:right">Cartão (pessoal)</th><th style="text-align:right">Total previsto</th></tr></thead>
+    <tbody>${previaRows || '<tr><td colspan="4" style="text-align:center;color:#999;padding:10px">Sem dados futuros.</td></tr>'}</tbody></table>
+    <p style="font-size:11px;color:#888;margin-top:6px">Valores de meses futuros são estimativas com base no que já está lançado/parcelado até agora.</p>
+  </body></html>`;
+  imprimirHTML(html);
+}
 function gerarPDFEvolutivo() {
   const mesRef = document.getElementById('exp-mes')?.value || mesAtual();
   const ano = mesRef.split('-')[0];
@@ -1329,7 +1777,7 @@ function importarBackup(event) {
       document.getElementById('dlg-confirm-wrap').style.display = 'none';
       dlgRequiredWord = null;
       dlgCb = () => {
-        D = { gastos: parsed.gastos||[], faturas: parsed.faturas||[], planejados: parsed.planejados||[] };
+        D = { gastos: parsed.gastos||[], faturas: parsed.faturas||[], planejados: parsed.planejados||[], fixos: parsed.fixos||[] };
         save();
         renderMais();
         showToast('Backup restaurado com sucesso!');
