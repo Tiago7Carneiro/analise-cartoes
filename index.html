@@ -181,9 +181,15 @@
   .dialog p { font-size: 14px; color: var(--text2); margin-bottom: 16px; }
   .dialog-btns { display: flex; gap: 10px; }
   .dialog-btns button { flex: 1; padding: 14px; border-radius: var(--radius-sm); border: none; font-size: 16px; font-weight: 600; font-family: inherit; cursor: pointer; }
+  .sync-badge { position: fixed; top: 8px; right: 8px; z-index: 500; font-size: 10px; padding: 3px 8px; border-radius: 10px; background: var(--surface2); color: var(--text3); }
+  .sync-badge.syncing { background: var(--blue-bg); color: var(--blue); }
+  .sync-badge.error { background: var(--red-bg); color: var(--red); }
 </style>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 </head>
 <body>
+<div class="sync-badge" id="sync-badge">📴 offline</div>
 
 <div class="header">
   <div class="header-top">
@@ -313,7 +319,7 @@ const CARTOES = {
 
 const CATEGORIAS = [
   {group:'Mercado', items:['Básico','Besteiras','Padaria','Hortifruti']},
-  {group:'Comida na Rua', items:['Lanche','Almoço','Destaque']},
+  {group:'Comida na Rua', items:['Lanche','Almoço','Destaque','Besteiras']},
   {group:'Carro', items:['Gasolina','Manutenção','Outros']},
   {group:'Pessoal', items:['Tiago','Danielle','Henrique','Lia Rosa']},
   {group:'Saúde', items:['Farmácia','Exames e Vac.']},
@@ -324,11 +330,88 @@ const CATEGORIAS = [
 const TITULARES = ['Tiago','Danielle','Henrique','Lia Rosa','Família'];
 
 const KEY = 'gestor_tiago_v3';
+
+// ============================================================
+// FIREBASE — sincronização em tempo real entre dispositivos
+// ============================================================
+const firebaseConfig = {
+  apiKey: "AIzaSyD-o6-KfFj7EZd_B0M8hTsWjHwm3O0xA04",
+  authDomain: "gestor-cartoes-tiago.firebaseapp.com",
+  projectId: "gestor-cartoes-tiago",
+  storageBucket: "gestor-cartoes-tiago.firebasestorage.app",
+  messagingSenderId: "534650112238",
+  appId: "1:534650112238:web:8bdad3bd75ae9741414bff"
+};
+
+let firebaseApp = null, db = null, docRef = null;
+let firebaseDisponivel = false;
+let salvandoRemoto = false;
+let ignorarProximoSnapshot = false; // evita loop: nosso próprio save() disparando o listener
+
+try {
+  firebaseApp = firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+  docRef = db.collection('gestores').doc('tiago-danielle');
+  firebaseDisponivel = true;
+} catch (e) {
+  console.error('Firebase indisponível, usando apenas armazenamento local.', e);
+}
+
+// D é a fonte da verdade em memória; sempre lido/escrito localmente antes de qualquer sincronização
 let D = {gastos:[], faturas:[]};
 try { const r = localStorage.getItem(KEY); if(r) D = JSON.parse(r); } catch(e){}
 if (!D.planejados) D.planejados = [];
 if (!D.fixos) D.fixos = []; // gastos fixos mensais (contas, boletos, etc.)
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(D)); } catch(e){} };
+
+function setSyncBadge(estado) {
+  const el = document.getElementById('sync-badge');
+  if (!el) return;
+  el.classList.remove('syncing','error');
+  if (estado === 'syncing') { el.textContent = '🔄 sincronizando'; el.classList.add('syncing'); }
+  else if (estado === 'error') { el.textContent = '⚠️ erro de sync'; el.classList.add('error'); }
+  else if (estado === 'ok') { el.textContent = '☁️ sincronizado'; }
+  else { el.textContent = '📴 offline'; }
+}
+
+// Salva local (instantâneo) e envia para o Firestore (assíncrono, em segundo plano).
+// Chamado da mesma forma que antes (save()), sem precisar de await nas centenas de chamadas existentes.
+const save = () => {
+  try { localStorage.setItem(KEY, JSON.stringify(D)); } catch(e){}
+  if (!firebaseDisponivel) { setSyncBadge('offline'); return; }
+  salvandoRemoto = true;
+  setSyncBadge('syncing');
+  ignorarProximoSnapshot = true;
+  docRef.set({ dados: JSON.stringify(D), atualizadoEm: firebase.firestore.FieldValue.serverTimestamp() })
+    .then(() => { salvandoRemoto = false; setSyncBadge('ok'); })
+    .catch((err) => { salvandoRemoto = false; setSyncBadge('error'); console.error('Erro ao salvar no Firestore:', err); });
+};
+
+// Escuta mudanças em tempo real (ex: quando a Danielle lança algo em outro aparelho)
+function iniciarSincronizacaoRemota() {
+  if (!firebaseDisponivel) return;
+  docRef.onSnapshot((snap) => {
+    if (ignorarProximoSnapshot) { ignorarProximoSnapshot = false; return; }
+    if (!snap.exists) { setSyncBadge('ok'); return; } // documento ainda não existe, primeiro save vai criar
+    try {
+      const remoto = JSON.parse(snap.data().dados);
+      D = remoto;
+      if (!D.planejados) D.planejados = [];
+      if (!D.fixos) D.fixos = [];
+      try { localStorage.setItem(KEY, JSON.stringify(D)); } catch(e){}
+      setSyncBadge('ok');
+      // Re-renderiza a tela atual com os dados atualizados
+      const paginaAtiva = document.querySelector('.nav-item.active');
+      if (paginaAtiva) {
+        const idx = [...document.querySelectorAll('.nav-item')].indexOf(paginaAtiva);
+        const nomes = ['home','lancar','gastos','faturas','mais'];
+        if (nomes[idx] === 'home') renderHome();
+        else if (nomes[idx] === 'gastos') { gastosPageBuilt = false; renderGastos(); }
+        else if (nomes[idx] === 'faturas') renderFaturas();
+        else if (nomes[idx] === 'mais') renderMais();
+      }
+    } catch(e) { console.error('Erro ao processar dados remotos:', e); setSyncBadge('error'); }
+  }, (err) => { console.error('Erro no listener do Firestore:', err); setSyncBadge('error'); });
+}
 
 const R = (v,d=2) => Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:d,maximumFractionDigits:d});
 const fmtD = s => s ? s.split('-').reverse().join('/') : '';
@@ -597,6 +680,7 @@ function renderLancar() {
     </div>
     <label class="field-label">Estabelecimento / descrição *</label>
     <input type="text" id="f-desc" placeholder="Ex: Posto Shell, Drogasil, iFood..." value="${g?g.desc:''}">
+    <div id="f-cat-sugestao" style="display:none;margin-top:6px"></div>
     <div class="field-row">
       <div><label class="field-label">Valor total (R$) *</label><input type="text" inputmode="decimal" id="f-valor" placeholder="0,00" value="${g?R(g.valor):''}"></div>
       <div><label class="field-label">Parcelas</label><input type="number" id="f-parcelas" min="1" max="48" value="${g?g.parcelas:1}"></div>
@@ -622,7 +706,65 @@ function renderLancar() {
   if (valorEl) {
     valorEl.addEventListener('input', () => { maskMoeda(valorEl); atualizarPreview(); });
   }
+  const descEl = document.getElementById('f-desc');
+  if (descEl && !g) { // só sugere em novo lançamento, não ao editar um já existente
+    let debounceTimer;
+    descEl.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => sugerirCategoria(descEl.value), 300);
+    });
+  }
   if(g) setTimeout(atualizarPreview,50);
+}
+
+// Sugere categoria com base no histórico: procura lançamentos anteriores com descrição parecida
+// (mesma palavra-chave principal) e sugere a categoria mais usada para esses casos.
+function sugerirCategoria(textoDigitado) {
+  const el = document.getElementById('f-cat-sugestao');
+  if (!el) return;
+  const termo = (textoDigitado||'').trim().toLowerCase();
+  if (termo.length < 3) { el.style.display = 'none'; return; }
+
+  // Normaliza removendo acentos e caracteres especiais para comparar melhor
+  const normalizar = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9\s]/g,' ').trim();
+  const termoNorm = normalizar(termo);
+  const palavrasTermo = termoNorm.split(/\s+/).filter(p=>p.length>=3);
+  if (!palavrasTermo.length) { el.style.display = 'none'; return; }
+
+  // Busca gastos anteriores cuja descrição compartilha pelo menos uma palavra-chave significativa
+  const candidatos = D.gastos.filter(g => {
+    const descNorm = normalizar(g.desc||'');
+    return palavrasTermo.some(p => descNorm.includes(p));
+  });
+
+  if (!candidatos.length) { el.style.display = 'none'; return; }
+
+  // Conta qual categoria é mais frequente entre os candidatos (mais recentes têm peso maior)
+  const contagem = {};
+  candidatos.forEach((g, i) => {
+    const peso = 1; // poderia ponderar por recência, mas contagem simples já funciona bem
+    contagem[g.categoria] = (contagem[g.categoria]||0) + peso;
+  });
+  const [catSugerida, freq] = Object.entries(contagem).sort((a,b)=>b[1]-a[1])[0];
+  const totalCandidatos = candidatos.length;
+  const catAtual = document.getElementById('f-cat')?.value;
+
+  if (catSugerida === catAtual) { el.style.display = 'none'; return; } // já está selecionada, não precisa sugerir
+
+  const nomeCategoria = catSugerida.split(' - ').pop();
+  el.style.display = 'block';
+  el.innerHTML = `
+    <button type="button" onclick="aplicarSugestaoCategoria('${catSugerida.replace(/'/g,"\\'")}')" style="width:100%;text-align:left;background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue);border-radius:var(--radius-sm);padding:9px 12px;font-size:12.5px;font-family:inherit;cursor:pointer">
+      💡 Baseado em ${totalCandidatos} lançamento(s) parecido(s), sugiro: <strong>${nomeCategoria}</strong> — toque para aplicar
+    </button>`;
+}
+
+function aplicarSugestaoCategoria(categoria) {
+  const catEl = document.getElementById('f-cat');
+  if (catEl) catEl.value = categoria;
+  const sugEl = document.getElementById('f-cat-sugestao');
+  if (sugEl) sugEl.style.display = 'none';
+  showToast('Categoria aplicada!');
 }
 
 function atualizarPreview() {
@@ -682,7 +824,14 @@ let gastosPageBuilt = false; // controla se o shell já foi construído
 function renderGastos() {
   const meses = new Set();
   D.gastos.forEach(g=>getParcelas(g).forEach(p=>meses.add(p.fk)));
-  const mesesArr = [...meses].sort().reverse();
+  // Ordena por proximidade do mês atual: primeiro os mais recentes/atuais, depois passado, por último futuro distante (parcelas longas)
+  const hojeKey = mesAtual();
+  const mesesArr = [...meses].sort((a,b) => {
+    // Meses <= hoje ficam antes dos futuros; dentro de cada grupo, mais próximo de hoje primeiro
+    const aFuturo = a > hojeKey, bFuturo = b > hojeKey;
+    if (aFuturo !== bFuturo) return aFuturo ? 1 : -1; // não-futuro vem antes
+    return aFuturo ? a.localeCompare(b) : b.localeCompare(a); // futuros: mais próximo primeiro; passados: mais recente primeiro
+  });
   const page = document.getElementById('page-gastos');
 
   // Constrói o shell estático apenas na primeira vez ou ao trocar de aba
@@ -862,7 +1011,9 @@ function renderFatTab() {
         <label class="field-label">Valor no app do banco (R$)</label>
         <input type="text" inputmode="decimal" id="fc-val" placeholder="0,00">
         <div id="fc-prev" style="margin-top:10px"></div>
-        <button class="btn btn-primary" style="margin-top:4px" onclick="fecharFatura()">✅ Confirmar fechamento</button>
+        <button class="btn btn-accent" style="margin-top:10px" onclick="gerarPDFConferencia()">📄 Gerar PDF de conferência</button>
+        <p style="font-size:11px;color:var(--text3);margin:4px 0 0 2px">Leva os lançamentos registrados para comparar com a fatura do banco (envie os dois aqui no chat)</p>
+        <button class="btn btn-primary" style="margin-top:14px" onclick="fecharFatura()">✅ Confirmar fechamento</button>
         <p style="font-size:11px;color:var(--text3);margin-top:6px">Use "Confirmar fechamento" apenas quando a fatura estiver definitivamente fechada pelo banco.</p>
       </div>`;
     ['fc-car','fc-mes'].forEach(id=>{ document.getElementById(id)?.addEventListener('input',fcPreview); });
@@ -1646,6 +1797,76 @@ function gerarPDFCartao() {
   imprimirHTML(html);
 }
 
+// PDF DE CONFERÊNCIA — usado na aba Fechar, para levar ao Claude e apontar a diferença com a fatura do banco
+function gerarPDFConferencia() {
+  const ck = document.getElementById('fc-car')?.value;
+  const mes = document.getElementById('fc-mes')?.value;
+  const vb = parseMoeda(document.getElementById('fc-val')?.value) || 0;
+  const c = CARTOES[ck];
+  if (!c || !mes) { showToast('Selecione o cartão e o mês'); return; }
+
+  const {gastos, total} = getTotaisFatura(ck, mes);
+  if (!gastos.length) { showToast('Nenhum lançamento nesta fatura para este cartão'); return; }
+
+  const diff = vb - total;
+  const ok = Math.abs(diff) < 0.02;
+
+  // Cronológico — mais recente primeiro, é o formato mais fácil de comparar linha a linha com o extrato
+  const cronologico = [...gastos].sort((a,b) => b.data.localeCompare(a.data));
+  const rowsCron = cronologico.map((g,i) =>
+    `<tr>
+      <td>${i+1}</td>
+      <td>${fmtD(g.data)}</td>
+      <td>${g.desc}${g.nomeFatura?`<br><span style="color:#888;font-size:10px">Na fatura: ${g.nomeFatura}</span>`:''}</td>
+      <td>${g.categoria}</td>
+      <td style="text-align:center">${g.pt>1?`${g.pn}/${g.pt}`:'-'}</td>
+      <td style="text-align:right;font-weight:600">${R(g.vp)}</td>
+    </tr>`
+  ).join('');
+
+  // Por categoria também, para visão rápida
+  const porCategoria = {};
+  gastos.forEach(g => { porCategoria[g.categoria] = (porCategoria[g.categoria]||0) + g.vp; });
+  const catRows = Object.entries(porCategoria).sort((a,b)=>b[1]-a[1]).map(([cat,val]) =>
+    `<tr><td>${cat}</td><td style="text-align:right">${R(val)}</td></tr>`
+  ).join('');
+
+  const bannerDiff = vb ? `
+    <div style="background:${ok?'#e8f5e9':'#fff3e0'};border:2px solid ${ok?'#2d6a4f':'#e67e22'};border-radius:8px;padding:14px;margin:14px 0">
+      <table style="width:100%;border:none">
+        <tr><td style="border:none;padding:2px 0">Total registrado no app</td><td style="border:none;text-align:right;font-weight:600">${R(total)}</td></tr>
+        <tr><td style="border:none;padding:2px 0">Valor informado do banco</td><td style="border:none;text-align:right;font-weight:600">${R(vb)}</td></tr>
+        <tr><td style="border:none;padding:6px 0 0;font-size:15px;font-weight:700;border-top:1px solid rgba(0,0,0,0.15)">${ok?'✅ Bateu certinho':'⚠️ Diferença a identificar'}</td><td style="border:none;text-align:right;padding:6px 0 0;font-size:15px;font-weight:700;border-top:1px solid rgba(0,0,0,0.15)">${ok?R(0):R(diff)}</td></tr>
+      </table>
+    </div>` : `
+    <div class="aviso" style="margin:14px 0">Valor do banco não informado neste relatório — preencha e gere novamente para ver a diferença calculada.</div>`;
+
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>
+    ${PDF_BASE_STYLE}
+    .aviso{background:#fff8e6;border:1px solid #f0c040;border-radius:6px;padding:8px 10px;font-size:11px;color:#7a5800}
+  </style></head><body>
+    <h1>🔍 Conferência de fatura — ${c.emoji} ${c.nome}</h1>
+    <p class="sub">Fatura ${fmtFatura(mes)} · Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')} · ${gastos.length} lançamento(s)</p>
+
+    ${bannerDiff}
+
+    <p style="font-size:11px;color:#888;margin-bottom:14px">📌 Envie este PDF junto com o PDF/print da fatura do banco no chat com o Claude, pedindo para apontar a diferença — ele compara linha a linha e identifica o que pode estar faltando ou sobrando.</p>
+
+    <h2>Resumo por categoria</h2>
+    <table><thead><tr><th>Categoria</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>${catRows}
+    <tr class="total-row"><td>TOTAL</td><td style="text-align:right">${R(total)}</td></tr></tbody></table>
+
+    <h2>Lançamentos (mais recente primeiro)</h2>
+    <table><thead><tr><th>#</th><th>Data</th><th>Descrição</th><th>Categoria</th><th style="text-align:center">Parc.</th><th style="text-align:right">Valor</th></tr></thead>
+    <tbody>
+      ${rowsCron}
+      <tr class="total-row"><td colspan="5">TOTAL</td><td style="text-align:right">${R(total)}</td></tr>
+    </tbody></table>
+  </body></html>`;
+  imprimirHTML(html);
+}
+
 // RELATÓRIO FINAL DO MÊS — junta contas fixas + cartão, com prévia dos meses seguintes
 function gerarPDFFinalMes() {
   const mesRef = document.getElementById('exp-mes')?.value || mesAtual();
@@ -1951,6 +2172,8 @@ function showToast(msg) {
 // Init
 renderHome();
 document.getElementById('fab').style.display='flex';
+iniciarSincronizacaoRemota();
+setSyncBadge(firebaseDisponivel ? 'syncing' : 'offline');
 </script>
 
 
