@@ -227,6 +227,19 @@
   .nota { font-size:12px; color:var(--text3); margin-top:8px; line-height:1.5; }
   .dica { font-size:14px; line-height:1.6; padding:10px 0; border-bottom:1px solid var(--border); color:var(--text2); }
   .dica:last-child { border-bottom:none; }
+  .extra-filtros { background:var(--surface); border-radius:var(--radius); padding:12px 14px; margin-bottom:12px; box-shadow:var(--shadow); }
+  .extra-filtros summary { font-size:14px; font-weight:600; cursor:pointer; color:var(--text2); }
+  .bar-row { margin-bottom:10px; }
+  .ev-banner { display:flex; gap:12px; align-items:center; background:var(--blue-bg); color:var(--blue); border:1.5px solid var(--blue); border-radius:var(--radius); padding:12px 14px; margin-bottom:12px; }
+  .ev-btn { background:var(--surface); color:var(--blue); border:1px solid var(--blue); border-radius:10px; padding:7px 12px; font-size:13px; font-weight:600; font-family:inherit; cursor:pointer; }
+  .field-row > * { min-width:0; }
+  input[type=date] { min-width:0; max-width:100%; }
+  .step { display:flex; gap:12px; align-items:flex-start; padding:9px 0; opacity:.55; }
+  .step.now { opacity:1; }
+  .step.done { opacity:.8; }
+  .step .dot { width:26px; height:26px; border-radius:50%; background:var(--surface2); display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; flex-shrink:0; }
+  .step.done .dot { background:var(--green-bg); color:var(--green); }
+  .step.now .dot { background:var(--brand); color:#fff; box-shadow:0 0 0 4px var(--green-bg); }
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
@@ -406,7 +419,7 @@ try {
 }
 
 // D é a fonte da verdade em memória; sempre lido/escrito localmente antes de qualquer sincronização
-const CFG_PADRAO = {meta:12000, verdeSobra:20, amareloSobra:5, limParcelas:30, aportePct:10};
+const CFG_PADRAO = {meta:12000, verdeSobra:20, amareloSobra:5, limParcelas:30, aportePct:10, reservaMin:0, reservaMinMeses:2, reservaMetaMeses:6, rendInvest:0.8, diaReembolso:0};
 function normD() {
   if (!D || typeof D !== 'object') D = {};
   if (!Array.isArray(D.gastos)) D.gastos = [];
@@ -415,6 +428,10 @@ function normD() {
   if (!Array.isArray(D.fixos)) D.fixos = []; // gastos fixos mensais (contas, boletos, etc.)
   if (!D.receitas || typeof D.receitas !== 'object' || Array.isArray(D.receitas)) D.receitas = {};
   if (!Array.isArray(D.aportes)) D.aportes = [];
+  if (!Array.isArray(D.avista)) D.avista = [];   // Pix/débito/dinheiro (saem direto da conta)
+  if (!Array.isArray(D.dividas)) D.dividas = []; // financiamentos/empréstimos
+  if (!D.caixa || typeof D.caixa !== 'object') D.caixa = {};
+  D.caixa = { saldo:null, data:null, ts:null, historico:[], pagos:{}, ...D.caixa };
   D.config = { ...CFG_PADRAO, ...(D.config || {}) };
 }
 let D = {gastos:[], faturas:[]};
@@ -498,7 +515,7 @@ function parseMoeda(str) {
   if (!str) return NaN;
   return parseFloat(str.replace(/\./g,'').replace(',','.'));
 }
-const hoje = () => new Date().toISOString().split('T')[0];
+const hoje = () => { const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; }; // data local (não UTC)
 const mesAtual = () => { const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; };
 
 // Retorna a fatura "em aberto" de um cartão específico: a próxima que ainda vai vencer.
@@ -710,6 +727,7 @@ function renderHome() {
 
   document.getElementById('page-home').innerHTML = `
     ${heroHome()}
+    ${eventoBannerHTML(true)}
     ${alertas}
     ${fixosAlertaHtml}
     <div class="metric-grid">
@@ -723,12 +741,14 @@ function renderHome() {
 
 // LANÇAR
 function renderLancar() {
+  if (lancarModo==='avista' && !editId) { renderLancarAvista(); return; }
   const catOpts = CATEGORIAS.map(g=>`<optgroup label="${g.group}">${g.items.map(i=>`<option value="${g.group} - ${i}">${i}</option>`).join('')}</optgroup>`).join('');
   const titOpts = TITULARES.map(t=>`<option value="${t}">${t}</option>`).join('');
   const g = editId ? D.gastos.find(x=>x.id===editId) : null;
 
   document.getElementById('page-lancar').innerHTML = `
     <div class="sec-title">${g?'Editar gasto':'Novo gasto'}</div>
+    ${g?'':toggleLancarHTML()}
     <div class="field-row">
       <div><label class="field-label">Data *</label><input type="date" id="f-data" value="${g?g.data:hoje()}"></div>
       <div><label class="field-label">Cartão *</label>
@@ -752,6 +772,9 @@ function renderLancar() {
     <input type="text" id="f-fatura" placeholder="Ex: RIO ROUTE 164, PGZ*AGUAAZULP..." value="${g?g.nomeFatura||'':''}">
     <label class="field-label">Observação</label>
     <input type="text" id="f-obs" placeholder="Detalhe opcional..." value="${g?g.obs||'':''}">
+    <label class="field-label">Evento / viagem (opcional)</label>
+    <input type="text" id="f-evento" list="dl-eventos" autocomplete="off" placeholder="Ex: Hotel feriado, Viagem Búzios" value="${g?escH(g.evento||''):escH((getEventoAtivo()||{}).nome||'')}">
+    <datalist id="dl-eventos">${listaEventos().map(e=>`<option value="${escH(e)}">`).join('')}</datalist>
     <button class="btn btn-primary" onclick="salvarGasto()">${g?'Salvar alterações':'Registrar gasto'}</button>
     <button class="btn btn-secondary" onclick="cancelarEdicao()">Cancelar</button>
   `;
@@ -861,11 +884,12 @@ function salvarGasto() {
   const categoria = document.getElementById('f-cat')?.value;
   const titular = document.getElementById('f-tit')?.value;
   const obs = document.getElementById('f-obs')?.value.trim();
+  const evento = normalizarEvento(document.getElementById('f-evento')?.value);
   const nomeFatura = document.getElementById('f-fatura')?.value.trim();
 
   if(!data||!cartao||!desc||!valor) { showToast('Preencha os campos obrigatórios'); return; }
 
-  const gasto = {id:editId||uid(),data,cartao,desc,valor,parcelas,categoria,titular,obs,nomeFatura,criadoEm:new Date().toISOString()};
+  const gasto = {id:editId||uid(),data,cartao,desc,valor,parcelas,categoria,titular,obs,evento,nomeFatura,criadoEm:new Date().toISOString()};
   if(editId) { D.gastos = D.gastos.map(g=>g.id===editId?gasto:g); showToast('Atualizado!'); }
   else { D.gastos.push(gasto); showToast('Registrado!'); }
   save();
@@ -878,31 +902,31 @@ function cancelarEdicao() { editId=null; goPageById('gastos'); }
 function editarGasto(id) { editId=id; goPageById('lancar'); }
 
 // GASTOS
-let filtCartao='', filtMes='', filtCat='', filtBusca='';
+let filtCartao='', filtMes='', filtCat='', filtBusca='', filtDe='', filtAte='', filtEvento='';
 let gastosPageBuilt = false; // controla se o shell já foi construído
 
+// GASTOS — busca por texto, data/período, evento (viagem/passeio) e resumo do filtro
 function renderGastos() {
   const meses = new Set();
   D.gastos.forEach(g=>getParcelas(g).forEach(p=>meses.add(p.fk)));
   // Ordena por proximidade do mês atual: primeiro os mais recentes/atuais, depois passado, por último futuro distante (parcelas longas)
   const hojeKey = mesAtual();
   const mesesArr = [...meses].sort((a,b) => {
-    // Meses <= hoje ficam antes dos futuros; dentro de cada grupo, mais próximo de hoje primeiro
     const aFuturo = a > hojeKey, bFuturo = b > hojeKey;
-    if (aFuturo !== bFuturo) return aFuturo ? 1 : -1; // não-futuro vem antes
-    return aFuturo ? a.localeCompare(b) : b.localeCompare(a); // futuros: mais próximo primeiro; passados: mais recente primeiro
+    if (aFuturo !== bFuturo) return aFuturo ? 1 : -1;
+    return aFuturo ? a.localeCompare(b) : b.localeCompare(a);
   });
   const page = document.getElementById('page-gastos');
 
   // Constrói o shell estático apenas na primeira vez ou ao trocar de aba
   if (!gastosPageBuilt) {
     page.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:10px">
         <div class="sec-title" style="margin:0">Gastos</div>
-        <div id="gastos-total" style="font-size:14px;font-weight:600"></div>
+        <div id="gastos-total" style="font-size:14px;font-weight:600;text-align:right"></div>
       </div>
       <div style="position:relative;margin-bottom:12px">
-        <input type="text" id="busca-gastos" placeholder="🔍 Buscar por nome, loja, categoria..." style="padding-right:36px">
+        <input type="text" id="busca-gastos" placeholder="🔍 Buscar por nome, loja, categoria, evento..." style="padding-right:36px">
         <button id="busca-limpar" onclick="limparBusca()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;padding:4px;display:none">✕</button>
       </div>
       <div class="filter-row" id="fil-cartao-row">
@@ -910,6 +934,23 @@ function renderGastos() {
         ${Object.entries(CARTOES).map(([k,c])=>`<button class="filter-chip" onclick="setFil('c','${k}')">${c.emoji} ${c.nome.split(' ')[0]}</button>`).join('')}
       </div>
       <div id="fil-mes-row" class="filter-row"></div>
+      <details id="gastos-extra" class="extra-filtros">
+        <summary>📅 Data, período e evento <span id="extra-badge" class="badge badge-blue" style="display:none;margin-left:6px">ativo</span></summary>
+        <div class="field-row" style="margin-top:10px">
+          <div><label class="field-label" style="margin-top:0">De</label><input type="date" id="fil-de"></div>
+          <div><label class="field-label" style="margin-top:0">Até</label><input type="date" id="fil-ate"></div>
+        </div>
+        <div class="filter-row" style="margin:10px 0 0">
+          <button class="filter-chip" onclick="setPeriodo('hoje')">Hoje</button>
+          <button class="filter-chip" onclick="setPeriodo('7d')">7 dias</button>
+          <button class="filter-chip" onclick="setPeriodo('mes')">Este mês</button>
+          <button class="filter-chip" onclick="setPeriodo('mesant')">Mês passado</button>
+          <button class="filter-chip" onclick="setPeriodo('limpar')">Limpar datas</button>
+        </div>
+        <label class="field-label">Evento / viagem</label>
+        <select id="fil-evento"></select>
+      </details>
+      <div id="gastos-resumo"></div>
       <div class="card" id="gastos-lista"></div>
     `;
     gastosPageBuilt = true;
@@ -919,20 +960,23 @@ function renderGastos() {
       document.getElementById('busca-limpar').style.display = filtBusca ? 'block' : 'none';
       atualizarListaGastos();
     });
+    ['fil-de','fil-ate'].forEach(id => {
+      const el = document.getElementById(id);
+      const h = () => { filtDe = document.getElementById('fil-de').value; filtAte = document.getElementById('fil-ate').value; atualizarListaGastos(); };
+      el.addEventListener('input', h); el.addEventListener('change', h);
+    });
+    document.getElementById('fil-evento').addEventListener('change', (e) => { filtEvento = e.target.value; atualizarListaGastos(); });
   }
 
-  // Restaura valor do campo de busca
   const buscaEl = document.getElementById('busca-gastos');
   if (buscaEl && buscaEl.value !== filtBusca) buscaEl.value = filtBusca;
   document.getElementById('busca-limpar').style.display = filtBusca ? 'block' : 'none';
 
-  // Atualiza estado visual dos chips de cartão
   document.querySelectorAll('#fil-cartao-row .filter-chip').forEach((btn, i) => {
     const k = i === 0 ? '' : Object.keys(CARTOES)[i-1];
     btn.classList.toggle('active', filtCartao === k);
   });
 
-  // Sempre reconstrói chips de mês — garante meses atualizados e filtro ativo correto
   const filMesRow = document.getElementById('fil-mes-row');
   if (filMesRow) {
     filMesRow.innerHTML = `
@@ -940,33 +984,234 @@ function renderGastos() {
       ${mesesArr.map(m=>`<button class="filter-chip ${filtMes===m?'active':''}" onclick="setFil('m','${m}')">${fmtFatura(m)}</button>`).join('')}
     `;
   }
+  // período e evento: restaura valores e reconstrói a lista de eventos
+  document.getElementById('fil-de').value = filtDe;
+  document.getElementById('fil-ate').value = filtAte;
+  const selEv = document.getElementById('fil-evento');
+  const evs = listaEventos();
+  if (filtEvento && !evs.includes(filtEvento)) filtEvento = '';
+  selEv.innerHTML = `<option value="">Todos</option>` + evs.map(e => `<option value="${escH(e)}" ${e===filtEvento?'selected':''}>🧳 ${escH(e)}</option>`).join('');
+  if (filtDe || filtAte || filtEvento) document.getElementById('gastos-extra').open = true;
 
   atualizarListaGastos();
 }
 
-// Atualiza só a lista de resultados (não reconstrói filtros nem campo de busca)
-function atualizarListaGastos() {
-  let lista = [...D.gastos].reverse();
-  if(filtCartao) lista=lista.filter(g=>g.cartao===filtCartao);
-  if(filtMes) lista=lista.filter(g=>getParcelas(g).some(p=>p.fk===filtMes));
-  if(filtCat) lista=lista.filter(g=>g.categoria===filtCat);
-  if(filtBusca) {
-    const termo = filtBusca.trim().toLowerCase();
-    lista = lista.filter(g =>
-      (g.desc||'').toLowerCase().includes(termo) ||
-      (g.obs||'').toLowerCase().includes(termo) ||
-      (g.nomeFatura||'').toLowerCase().includes(termo) ||
-      (g.categoria||'').toLowerCase().includes(termo)
-    );
+// Todos os lançamentos (cartão + Pix/débito) numa lista única
+function itensGastos() {
+  const a = D.gastos.map(g => ({ tipo:'c', g }));
+  const b = (D.avista||[]).map(x => ({ tipo:'a', g:x }));
+  return a.concat(b);
+}
+const semAcento = s => String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+function listaEventos() {
+  const ult = {};
+  itensGastos().forEach(({g}) => { if (g.evento) { if (!ult[g.evento] || g.data > ult[g.evento]) ult[g.evento] = g.data; } });
+  return Object.keys(ult).sort((x,y) => ult[y].localeCompare(ult[x]));
+}
+// evita duplicar o mesmo evento com grafia diferente (maiúsculas, acentos, espaços)
+function normalizarEvento(nome) {
+  const limpo = String(nome||'').trim().replace(/\s+/g,' ');
+  if (!limpo) return '';
+  const k = semAcento(limpo);
+  const existente = listaEventos().find(e => semAcento(e) === k);
+  return existente || limpo;
+}
+const grupoCategoria = c => String(c||'Outros').split(' - ')[0];
+
+function filtrarItens() {
+  let lista = itensGastos();
+  if (filtCartao) lista = lista.filter(i => i.tipo==='c' && i.g.cartao===filtCartao);
+  if (filtMes) lista = lista.filter(i => i.tipo==='c' ? getParcelas(i.g).some(p=>p.fk===filtMes) : (i.g.data||'').startsWith(filtMes));
+  if (filtCat) lista = lista.filter(i => i.g.categoria===filtCat);
+  if (filtDe) lista = lista.filter(i => (i.g.data||'') >= filtDe);
+  if (filtAte) lista = lista.filter(i => (i.g.data||'') <= filtAte);
+  if (filtEvento) lista = lista.filter(i => (i.g.evento||'') === filtEvento);
+  if (filtBusca) {
+    const termo = semAcento(filtBusca);
+    lista = lista.filter(({g}) =>
+      semAcento(g.desc).includes(termo) || semAcento(g.obs).includes(termo) ||
+      semAcento(g.nomeFatura).includes(termo) || semAcento(g.categoria).includes(termo) || semAcento(g.evento).includes(termo));
   }
-  const total = lista.reduce((s,g)=>{
-    if(filtMes) { const p=getParcelas(g).find(p=>p.fk===filtMes); return s+(p?p.val:0); }
-    return s+Number(g.valor);
-  },0);
+  lista.sort((a,b) => (b.g.data||'').localeCompare(a.g.data||'') || (b.g.criadoEm||'').localeCompare(a.g.criadoEm||''));
+  return lista;
+}
+function valorItem(i) {
+  if (i.tipo==='c' && filtMes) { const p = getParcelas(i.g).find(p=>p.fk===filtMes); return p ? p.val : 0; }
+  return Number(i.g.valor);
+}
+
+let itensFiltrados = [];
+function atualizarListaGastos() {
+  const lista = filtrarItens();
+  itensFiltrados = lista;
+  const total = lista.reduce((s,i)=>s+valorItem(i),0);
   const listaEl = document.getElementById('gastos-lista');
   const totalEl = document.getElementById('gastos-total');
-  if(listaEl) listaEl.innerHTML = lista.length ? lista.map(g=>gastoItemHTML(g,false)).join('') : `<div class="empty">Nenhum gasto encontrado${filtBusca?` para "${filtBusca}"`:''}.</div>`;
-  if(totalEl) totalEl.textContent = lista.length ? R(total) : '';
+  if (listaEl) listaEl.innerHTML = lista.length
+    ? lista.map(i => i.tipo==='c' ? gastoItemHTML(i.g,false) : avistaItemHTML(i.g)).join('')
+    : `<div class="empty">Nenhum gasto encontrado${filtBusca?` para "${escH(filtBusca)}"`:''}.</div>`;
+  if (totalEl) totalEl.innerHTML = lista.length ? `<div>${R(total)}</div><div style="font-size:11px;font-weight:400;color:var(--text3)">${lista.length} lançamento(s)</div>` : '';
+  const badge = document.getElementById('extra-badge');
+  if (badge) badge.style.display = (filtDe || filtAte || filtEvento) ? 'inline-block' : 'none';
+  renderResumoGastos(lista, total);
+}
+
+function resumoDoFiltro(lista) {
+  const porGrupo = {}, porForma = { Cartão:0, 'Pix/débito':0 };
+  let total = 0, min = null, max = null;
+  lista.forEach(i => {
+    const v = valorItem(i); total += v;
+    const gr = grupoCategoria(i.g.categoria); porGrupo[gr] = (porGrupo[gr]||0) + v;
+    if (i.tipo==='c') porForma['Cartão'] += v; else porForma['Pix/débito'] += v;
+    const d = i.g.data; if (d) { if (!min || d < min) min = d; if (!max || d > max) max = d; }
+  });
+  const grupos = Object.entries(porGrupo).sort((a,b)=>b[1]-a[1]);
+  return { total, grupos, porForma, min, max };
+}
+
+function renderResumoGastos(lista, total) {
+  const el = document.getElementById('gastos-resumo'); if (!el) return;
+  const ativo = filtEvento || filtDe || filtAte || filtBusca;
+  if (!ativo || !lista.length) { el.innerHTML = ''; return; }
+  const r = resumoDoFiltro(lista);
+  const dias = r.min && r.max ? diasEntre(r.min, r.max) + 1 : 1;
+  const titulo = filtEvento ? `🧳 ${escH(filtEvento)}` : (filtDe||filtAte ? '📅 Resumo do período' : '🔍 Resumo da busca');
+  const periodo = r.min ? (r.min===r.max ? fmtD(r.min) : `${fmtD(r.min)} a ${fmtD(r.max)}`) : '';
+  const barras = r.grupos.map(([gr,v]) => `
+    <div class="bar-row"><div style="display:flex;justify-content:space-between;font-size:13px"><span>${escH(gr)}</span><strong>${R(v)} <span style="font-weight:400;color:var(--text3)">${r.total?Math.round(v/r.total*100):0}%</span></strong></div>
+    <div class="progress"><div class="progress-fill" style="width:${r.total?v/r.total*100:0}%;background:var(--brand)"></div></div></div>`).join('');
+  const formas = Object.entries(r.porForma).filter(([,v])=>v>0).map(([k,v])=>`${k}: <strong>${R(v)}</strong>`).join(' · ');
+  const nomeSug = filtEvento || (filtBusca ? filtBusca.trim().replace(/^./, c=>c.toUpperCase()) : '');
+  let acoes = '';
+  if (filtEvento) {
+    acoes = `
+      <button class="btn btn-accent" style="margin-top:14px" onclick="gerarPDFEvento()">📄 PDF deste evento</button>
+      <button class="btn btn-secondary" style="margin-top:8px" onclick="ativarEvento(filtEvento)">🧳 Ligar modo evento neste evento</button>
+      <div class="field-row" style="grid-template-columns:2fr 1fr;margin-top:10px">
+        <input type="text" id="ev-nome" value="${escH(filtEvento)}" placeholder="Nome do evento">
+        <button class="btn btn-secondary" style="margin:0;padding:12px" onclick="renomearEvento()">Renomear</button>
+      </div>
+      <button class="btn btn-secondary" style="margin-top:8px;font-size:13px" onclick="desfazerEvento()">Desfazer evento (remove a marcação)</button>`;
+  } else {
+    acoes = `
+      <div style="margin-top:14px;font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Agrupar como evento</div>
+      <p class="nota" style="margin:4px 0 8px">Marca estes ${lista.length} lançamento(s) com um nome (ex.: "Hotel feriado") para somar e consultar depois.</p>
+      <div class="field-row" style="grid-template-columns:2fr 1fr">
+        <input type="text" id="ev-nome" value="${escH(nomeSug)}" placeholder="Nome do evento">
+        <button class="btn btn-accent" style="margin:0;padding:12px" onclick="marcarEventoFiltrado()">Marcar</button>
+      </div>`;
+  }
+  el.innerHTML = `<div class="card" style="border:1.5px solid var(--brand)">
+    <div class="card-title" style="margin-bottom:6px">${titulo}</div>
+    <div style="font-size:30px;font-weight:800;letter-spacing:-1px">${R(r.total)}</div>
+    <div class="nota" style="margin:2px 0 12px">${lista.length} lançamento(s)${periodo?` · ${periodo}`:''}${dias>1?` · média ${R(r.total/dias)}/dia`:''}</div>
+    ${barras}
+    ${formas?`<p class="nota" style="margin-top:12px">${formas}</p>`:''}
+    <p class="nota">Compras parceladas entram pelo valor total.</p>
+    ${acoes}
+  </div>`;
+}
+
+function setPeriodo(k) {
+  const hojeISO = hoje(); const d = new Date();
+  if (k === 'hoje') { filtDe = filtAte = hojeISO; }
+  else if (k === '7d') { const a = new Date(); a.setDate(a.getDate()-6); filtDe = isoLocal(a); filtAte = hojeISO; }
+  else if (k === 'mes') { filtDe = `${mesAtual()}-01`; filtAte = fimMes(mesAtual()); }
+  else if (k === 'mesant') { const m = addMesKey(mesAtual(), -1); filtDe = `${m}-01`; filtAte = fimMes(m); }
+  else { filtDe = filtAte = ''; }
+  document.getElementById('fil-de').value = filtDe;
+  document.getElementById('fil-ate').value = filtAte;
+  atualizarListaGastos();
+}
+
+function abrirConfirm(titulo, msg, okTxt, cb, perigo) {
+  document.getElementById('dlg-title').textContent = titulo;
+  document.getElementById('dlg-msg').textContent = msg;
+  const ok = document.getElementById('dlg-ok');
+  ok.textContent = okTxt;
+  ok.style.background = perigo ? 'var(--red-bg)' : 'var(--blue-bg)';
+  ok.style.color = perigo ? 'var(--red)' : 'var(--blue)';
+  document.getElementById('dlg-confirm-wrap').style.display = 'none';
+  dlgRequiredWord = null; dlgCb = cb;
+  document.getElementById('overlay').classList.add('show');
+}
+
+function marcarEventoFiltrado() {
+  const nome = normalizarEvento(document.getElementById('ev-nome').value);
+  if (!nome) { showToast('Dê um nome ao evento'); return; }
+  const itens = itensFiltrados.slice();
+  abrirConfirm('Marcar como evento', `${itens.length} lançamento(s) serão marcados como "${nome}".`, 'Marcar', () => {
+    itens.forEach(i => { i.g.evento = nome; });
+    save();
+    filtBusca = ''; filtDe = filtAte = ''; filtMes = ''; filtCartao = ''; filtCat = ''; filtEvento = nome;
+    renderGastos(); showToast('Evento criado ✓');
+  });
+}
+function renomearEvento() {
+  const novo = normalizarEvento(document.getElementById('ev-nome').value);
+  if (!novo) { showToast('Informe o novo nome'); return; }
+  const antigo = filtEvento;
+  itensGastos().forEach(({g}) => { if (g.evento === antigo) g.evento = novo; });
+  save(); filtEvento = novo; renderGastos(); showToast('Evento renomeado');
+}
+function desfazerEvento() {
+  const antigo = filtEvento; const n = itensFiltrados.length;
+  abrirConfirm('Desfazer evento', `Remove a marcação "${antigo}" de ${n} lançamento(s). Os gastos continuam registrados.`, 'Desfazer', () => {
+    itensGastos().forEach(({g}) => { if (g.evento === antigo) delete g.evento; });
+    save(); filtEvento = ''; renderGastos(); showToast('Evento desfeito');
+  }, true);
+}
+
+function confirmarDeleteAvista(id) {
+  abrirConfirm('Remover gasto', 'Remover este lançamento Pix/débito? Essa ação não pode ser desfeita.', 'Remover', () => {
+    D.avista = D.avista.filter(x => x.id !== id); save(); atualizarListaGastos(); showToast('Removido');
+  }, true);
+}
+
+function avistaItemHTML(x) {
+  const forma = x.forma==='pix' ? 'Pix' : x.forma==='debito' ? 'Débito' : 'Dinheiro';
+  return `<div class="gasto-item">
+    <div class="gasto-body">
+      <div class="gasto-desc">${escH(x.desc)}</div>
+      <div class="gasto-meta">${fmtD(x.data)} · 💵 ${forma}</div>
+      <div class="gasto-meta">${escH(x.categoria||'')}${x.titular?' · '+escH(x.titular):''}</div>
+      <div class="gasto-tags"><span class="badge badge-gray">sai da conta</span>${x.evento?`<span class="badge badge-blue">🧳 ${escH(x.evento)}</span>`:''}</div>
+    </div>
+    <div class="gasto-right">
+      <div class="gasto-val">${R(Number(x.valor))}</div>
+      <div class="gasto-actions"><button class="action-btn" onclick="confirmarDeleteAvista('${x.id}')">🗑️</button></div>
+    </div>
+  </div>`;
+}
+
+function gerarPDFEvento() {
+  if (!filtEvento || !itensFiltrados.length) { showToast('Selecione um evento'); return; }
+  const lista = itensFiltrados.slice().sort((a,b)=>(a.g.data||'').localeCompare(b.g.data||''));
+  const r = resumoDoFiltro(lista);
+  const periodo = r.min===r.max ? fmtD(r.min) : `${fmtD(r.min)} a ${fmtD(r.max)}`;
+  const linhasGrupo = r.grupos.map(([gr,v]) => `<tr><td>${escH(gr)}</td><td style="width:40%"><span class="pct-bar" style="width:${Math.round(v/r.total*100)}%"></span> ${Math.round(v/r.total*100)}%</td><td style="text-align:right">${R(v)}</td></tr>`).join('');
+  const linhas = lista.map((i,k) => {
+    const g = i.g; const c = i.tipo==='c' ? (CARTOES[g.cartao]||{}) : null;
+    const onde = i.tipo==='c' ? `${c.emoji||''} ${escH(c.nome||g.cartao)}${g.parcelas>1?` · ${g.parcelas}x`:''}` : (g.forma==='pix'?'Pix':g.forma==='debito'?'Débito':'Dinheiro');
+    return `<tr><td>${k+1}</td><td>${fmtD(g.data)}</td><td>${escH(g.desc)}</td><td>${onde}</td><td>${escH(g.categoria||'')}</td><td style="text-align:right;font-weight:600">${R(Number(g.valor))}</td></tr>`;
+  }).join('');
+  const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><style>${PDF_BASE_STYLE}</style></head><body>
+    <h1>🧳 ${escH(filtEvento)}</h1>
+    <p class="sub">Tiago &amp; Danielle · Gerado em ${new Date().toLocaleString('pt-BR')} · ${lista.length} lançamento(s)</p>
+    <div class="resumo-grid">
+      <div class="resumo-box"><div class="lbl">Total do evento</div><div class="val">${R(r.total)}</div></div>
+      <div class="resumo-box"><div class="lbl">Período</div><div class="val" style="font-size:13px">${periodo}</div></div>
+      <div class="resumo-box"><div class="lbl">Lançamentos</div><div class="val">${lista.length}</div></div>
+    </div>
+    <h2>Por categoria</h2>
+    <table><thead><tr><th>Categoria</th><th>%</th><th style="text-align:right">Total</th></tr></thead><tbody>${linhasGrupo}
+    <tr class="total-row"><td colspan="2">TOTAL</td><td style="text-align:right">${R(r.total)}</td></tr></tbody></table>
+    <h2>Todos os lançamentos</h2>
+    <table><thead><tr><th>#</th><th>Data</th><th>Descrição</th><th>Pago com</th><th>Categoria</th><th style="text-align:right">Valor</th></tr></thead><tbody>${linhas}
+    <tr class="total-row"><td colspan="5">TOTAL</td><td style="text-align:right">${R(r.total)}</td></tr></tbody></table>
+    <p class="sub" style="margin-top:10px">Compras parceladas entram pelo valor total da compra.</p>
+  </body></html>`;
+  imprimirHTML(html);
 }
 
 function limparBusca() {
@@ -1000,6 +1245,7 @@ function gastoItemHTML(g, compact) {
       <div class="gasto-tags">
         ${igui?'<span class="badge badge-green">iGUi</span>':''}
         ${antiga?'<span class="badge badge-amber">loja antiga</span>':''}
+        ${g.evento?`<span class="badge badge-blue">🧳 ${escH(g.evento)}</span>`:''}
         ${ps.length?`<span class="badge badge-gray">fatura ${fmtFatura(ps[0].fk)}</span>`:''}
       </div>
     </div>
@@ -2109,7 +2355,7 @@ function importarBackup(event) {
       document.getElementById('dlg-confirm-wrap').style.display = 'none';
       dlgRequiredWord = null;
       dlgCb = () => {
-        D = { gastos: parsed.gastos||[], faturas: parsed.faturas||[], planejados: parsed.planejados||[], fixos: parsed.fixos||[], receitas: parsed.receitas||{}, aportes: parsed.aportes||[], config: parsed.config||{} };
+        D = { gastos: parsed.gastos||[], faturas: parsed.faturas||[], planejados: parsed.planejados||[], fixos: parsed.fixos||[], receitas: parsed.receitas||{}, aportes: parsed.aportes||[], config: parsed.config||{}, avista: parsed.avista||[], dividas: parsed.dividas||[], caixa: parsed.caixa||{} };
         normD();
         save();
         renderMais();
@@ -2166,30 +2412,43 @@ function copiar(tipo) {
 
 
 // ============================================================
-// CONSELHEIRO FINANCEIRO (semáforo + indicadores + simulador)
+// CONSELHEIRO FINANCEIRO — semáforo, caixa, previsão, dívidas
 // Inspirado em "Pai Rico, Pai Pobre": ativos x passivos, pague-se primeiro,
 // fuja de dívida cara e construa renda passiva até cobrir o custo de vida.
 // ============================================================
 const escH = s => String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const CAT_IGUI = 'Loja - iGUi (reembolso)';
 const pad2 = n => String(n).padStart(2,'0');
+const isoLocal = d => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
 function addMesKey(mes, n) {
   const [y,m] = mes.split('-').map(Number);
   const r = addMonths(y, m-1, n);
   return `${r.y}-${pad2(r.m+1)}`;
 }
 const NOME_MES = mk => { const [y,m]=mk.split('-').map(Number); return new Date(y,m-1,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}); };
+const NOME_MES_CURTO = mk => { const [y,m]=mk.split('-').map(Number); return new Date(y,m-1,1).toLocaleDateString('pt-BR',{month:'long'}); };
+function dataMes(mk, dia) {
+  const [y,m] = mk.split('-').map(Number);
+  const ult = new Date(y, m, 0).getDate();
+  const d = Math.min(Math.max(1, parseInt(dia)||1), ult);
+  return `${mk}-${pad2(d)}`;
+}
+const fimMes = mk => { const [y,m] = mk.split('-').map(Number); return `${mk}-${pad2(new Date(y,m,0).getDate())}`; };
+const fmtDM = iso => `${iso.slice(8,10)}/${iso.slice(5,7)}`;
+const diasEntre = (a, b) => Math.round((new Date(b+'T12:00:00') - new Date(a+'T12:00:00')) / 86400000);
+const RM = v => R(v, 0); // moeda sem centavos
 
-// Receitas do mês; se o mês ainda não foi preenchido, herda o último mês preenchido
+// ---------- Receitas ----------
+// fixa ('ativa'/'passiva') entra nas projeções; 'variavel' (comissão) só vale no mês em que cai
 function getReceitasMes(mes) {
   const r = D.receitas || {};
   if (r[mes] && r[mes].length) return { lista: r[mes], herdada: null };
   const antes = Object.keys(r).filter(k => k < mes && r[k] && r[k].length).sort();
-  if (antes.length) { const k = antes[antes.length-1]; return { lista: r[k], herdada: k }; }
+  if (antes.length) { const k = antes[antes.length-1]; return { lista: r[k].filter(x=>x.tipo!=='variavel'), herdada: k }; }
   return { lista: [], herdada: null };
 }
 
-// Cartões que vencem no mês (fluxo de caixa), separando o que a empresa reembolsa
+// ---------- Gastos do mês ----------
 function gastoCartaoMes(mes) {
   let bruto = 0, igui = 0;
   Object.keys(CARTOES).forEach(k => {
@@ -2199,7 +2458,6 @@ function gastoCartaoMes(mes) {
   });
   return { bruto, igui, pessoal: bruto - igui };
 }
-// Parcelas (compras parceladas) já comprometidas num mês, sem contar o reembolsável
 function parcelasMes(mes) {
   let t = 0;
   Object.keys(CARTOES).forEach(k => {
@@ -2207,18 +2465,42 @@ function parcelasMes(mes) {
   });
   return t;
 }
+function avistaMes(mes) {
+  return (D.avista||[]).filter(x => (x.data||'').startsWith(mes)).reduce((s,x)=>s+Number(x.valor),0);
+}
+// média de Pix/débito dos últimos meses fechados (provisão para meses futuros)
+function mediaAvista() {
+  const mes = mesAtual();
+  const v = [1,2,3].map(i => avistaMes(addMesKey(mes,-i))).filter(x=>x>0);
+  if (v.length) return v.reduce((a,b)=>a+b,0)/v.length;
+  return avistaMes(mes);
+}
+function gastoMesTotal(mes) { return totalFixosPix(mes) + gastoCartaoMes(mes).pessoal + avistaMes(mes); }
+function custoVidaRef() {
+  const mes = mesAtual();
+  const v = [0,-1,-2].map(i => gastoMesTotal(addMesKey(mes,i))).filter(x=>x>0);
+  return v.length ? v.reduce((a,b)=>a+b,0)/v.length : D.config.meta;
+}
 function jurosRecentes() {
   const lim = new Date(); lim.setDate(lim.getDate() - 90);
   const l = D.gastos.filter(g => /Parcelamento de Fatura$/.test(g.categoria||'') && new Date(g.data+'T12:00:00') >= lim);
   return { n: l.length, total: l.reduce((s,g)=>s+Number(g.valor),0) };
 }
 
+// ---------- Semáforo ----------
 const RANK = { verde:0, amarelo:1, vermelho:2 };
-function classificar(sobraPct, parcPct, juros) {
+function classificar(sobraPct, parcPct, juros, ctx) {
   const c = D.config; const motivos = [];
   let st = 'verde';
   const sobe = (n, msg) => { if (RANK[n] > RANK[st]) st = n; motivos.push({n, msg}); };
-  if (sobraPct < 0) sobe('vermelho', `Gasta mais do que ganha (${sobraPct.toFixed(0)}% da receita).`);
+  const caixa = ctx && ctx.caixa != null ? ctx.caixa : null;
+  if (sobraPct < 0) {
+    if (caixa != null && caixa > 0 && ctx.sobra < 0) {
+      const meses = caixa / (-ctx.sobra);
+      if (meses >= 12) sobe('amarelo', `Gasta ${R(-ctx.sobra)} a mais que ganha, mas a reserva sustenta ${meses.toFixed(0)} meses nesse ritmo.`);
+      else sobe('vermelho', `Gasta ${R(-ctx.sobra)} a mais que ganha e a reserva dura só ${meses.toFixed(1)} mês(es) nesse ritmo.`);
+    } else sobe('vermelho', `Gasta mais do que ganha (${sobraPct.toFixed(0)}% da receita) e não há reserva informada.`);
+  }
   else if (sobraPct < c.amareloSobra) sobe('vermelho', `Sobra de só ${sobraPct.toFixed(0)}% — abaixo do mínimo de ${c.amareloSobra}%.`);
   else if (sobraPct < c.verdeSobra) sobe('amarelo', `Sobra de ${sobraPct.toFixed(0)}% — o ideal é ${c.verdeSobra}% ou mais.`);
   if (parcPct > c.limParcelas + 10) sobe('vermelho', `Parcelas já comprometem ${parcPct.toFixed(0)}% da receita (limite ${c.limParcelas}%).`);
@@ -2230,12 +2512,16 @@ function classificar(sobraPct, parcPct, juros) {
 
 function calcAdvisor(mes) {
   mes = mes || mesAtual();
+  const futuro = mes > mesAtual();
   const { lista, herdada } = getReceitasMes(mes);
-  const receita = lista.reduce((s,r)=>s+Number(r.valor),0);
-  const passiva = lista.filter(r=>r.tipo==='passiva').reduce((s,r)=>s+Number(r.valor),0);
+  const fixas = lista.filter(r => r.tipo !== 'variavel');
+  const receita = fixas.reduce((s,r)=>s+Number(r.valor),0);
+  const variavel = lista.filter(r => r.tipo === 'variavel').reduce((s,r)=>s+Number(r.valor),0);
+  const passiva = fixas.filter(r=>r.tipo==='passiva').reduce((s,r)=>s+Number(r.valor),0);
   const fixos = totalFixosPix(mes);
   const cart = gastoCartaoMes(mes);
-  const gasto = fixos + cart.pessoal;
+  const avista = futuro ? mediaAvista() : avistaMes(mes);
+  const gasto = fixos + cart.pessoal + avista;
   const sobra = receita - gasto;
   const sobraPct = receita > 0 ? sobra/receita*100 : 0;
   const prox = addMesKey(mes, 1);
@@ -2245,12 +2531,147 @@ function calcAdvisor(mes) {
   const aportesMes = (D.aportes||[]).filter(a=>(a.data||'').startsWith(mes)).reduce((s,a)=>s+Number(a.valor),0);
   const aporteMeta = receita * D.config.aportePct/100;
   const passivaPct = gasto > 0 ? passiva/gasto*100 : 0;
+  const sim = simularCaixa();
+  const caixa = sim ? sim.saldoHoje : null;
+  const ref = custoVidaRef();
+  const folego = caixa != null && ref > 0 ? caixa/ref : null;
   let cls = { st:'sem', motivos:[] };
-  if (receita > 0) cls = classificar(sobraPct, parcPct, juros);
-  return { mes, lista, herdada, receita, passiva, fixos, cart, gasto, sobra, sobraPct, prox, parcProx, parcPct, juros, aportesMes, aporteMeta, passivaPct, ...cls };
+  if (receita > 0) cls = classificar(sobraPct, parcPct, juros, { sobra, caixa });
+  return { mes, lista, herdada, receita, variavel, passiva, fixos, cart, avista, gasto, sobra, sobraPct, prox, parcProx, parcPct, juros, aportesMes, aporteMeta, passivaPct, caixa, ref, folego, sim, ...cls };
 }
 
-// Simula uma compra nova: valor em n parcelas (cai a partir da próxima fatura)
+// ---------- Caixa: eventos datados e projeção do saldo ----------
+// Monta tudo que entra e sai da conta entre ini e fim (ISO). ts = momento em que o saldo foi informado.
+function buildEventos(ini, fim, ts) {
+  const ev = [];
+  const hojeISO = hoje();
+  const pagos = (D.caixa && D.caixa.pagos) || {};
+  const meses = []; let mk = ini.slice(0,7); const mkFim = fim.slice(0,7);
+  while (mk <= mkFim) { meses.push(mk); mk = addMesKey(mk, 1); }
+  const push = (e) => { if (e.date >= ini && e.date <= fim) ev.push(e); };
+
+  meses.forEach(m => {
+    // receitas fixas (comissão não entra: só conta depois que cai e você informa o saldo)
+    getReceitasMes(m).lista.filter(r=>r.tipo!=='variavel').forEach(r => {
+      push({ date: dataMes(m, r.dia||5), tipo:'receita', desc: r.fonte, valor: Number(r.valor), key:`rec:${m}:${r.id}` });
+    });
+    // contas fixas pagas por Pix/débito/boleto (as no cartão já estão na fatura)
+    getFixosMes(m).forEach(f => {
+      if (getFormaEfetiva(f, m) !== 'pix') return;
+      const conf = (f.confirmacoes||{})[m];
+      if (conf) {
+        if (conf.pagoEm && ts && conf.pagoEm > ts) push({ date: isoLocal(new Date(conf.pagoEm)), tipo:'fixo', desc: f.desc, valor: -Number(conf.valorReal), key:`fixo:${f.id}:${m}`, real:true });
+      } else {
+        push({ date: dataMes(m, f.vencDia), tipo:'fixo', desc: f.desc, valor: -Number(f.valorEst), key:`fixo:${f.id}:${m}` });
+      }
+    });
+    // faturas de cartão (vencem no dia de vencimento do cartão)
+    let iguiMes = 0;
+    Object.entries(CARTOES).forEach(([k,c]) => {
+      const { gastos, total } = getTotaisFatura(k, m);
+      gastos.forEach(g => { if (g.categoria === CAT_IGUI) iguiMes += g.vp; });
+      const key = `fat:${k}:${m}`;
+      if (total > 0 && !pagos[key]) push({ date: dataMes(m, c.venc), tipo:'cartao', desc:`Fatura ${c.nome}`, valor: -total, key });
+    });
+    if (D.config.diaReembolso > 0 && iguiMes > 0) push({ date: dataMes(m, D.config.diaReembolso), tipo:'receita', desc:'Reembolso iGUi', valor: iguiMes, key:`igui:${m}` });
+  });
+
+  // Pix/débito lançados depois do saldo informado (ou programados para o futuro)
+  (D.avista||[]).forEach(x => {
+    if (!x.data) return;
+    if ((ts && x.criadoEm && x.criadoEm > ts) || x.data > hojeISO) push({ date: x.data, tipo:'avista', desc: x.desc, valor: -Number(x.valor), key:`av:${x.id}`, real: x.data <= hojeISO });
+  });
+
+  const ordem = { cartao:0, fixo:0, avista:0, receita:1 }; // no mesmo dia, saídas antes (visão conservadora)
+  ev.sort((a,b) => a.date.localeCompare(b.date) || ordem[a.tipo]-ordem[b.tipo]);
+  return ev;
+}
+
+function simularCaixa() {
+  const c = D.caixa;
+  if (!c || c.saldo == null || !c.data) return null;
+  const hojeISO = hoje();
+  const mkAtual = mesAtual();
+  const prox = addMesKey(mkAtual, 1);
+  const fim = fimMes(prox);
+  const ini = c.data < hojeISO ? c.data : hojeISO;
+  const evs = buildEventos(ini, fim, c.ts);
+  let run = Number(c.saldo);
+  const jaFoi = e => e.date < hojeISO || (e.real && e.date <= hojeISO);
+  evs.filter(jaFoi).forEach(e => { run += e.valor; });
+  const saldoHoje = run;
+  const fut = evs.filter(e => !jaFoi(e));
+  let min = saldoHoje, minDate = hojeISO, primeiroNeg = null;
+  fut.forEach(e => {
+    run += e.valor; e.saldo = run;
+    if (run < min) { min = run; minDate = e.date; }
+    if (run < 0 && !primeiroNeg) primeiroNeg = { date: e.date, desc: e.desc };
+  });
+  const saldoEm = iso => { let s = saldoHoje; for (const e of fut) { if (e.date <= iso) s = e.saldo; else break; } return s; };
+  const reservaMin = D.config.reservaMin || 0;
+  return {
+    saldoHoje, linha: fut, min, minDate, primeiroNeg, mkAtual, prox, fim,
+    fimAtual: saldoEm(fimMes(mkAtual)), fimProx: saldoEm(fim),
+    livre: Math.max(0, min - reservaMin),
+    diasDesatualizado: diasEntre(c.data, hojeISO),
+    pendentes: evs.filter(jaFoi),
+  };
+}
+
+// ---------- Dívidas e antecipação ----------
+const PV = (P, n, i) => (i > 0 ? P * (1 - Math.pow(1+i, -n)) / i : P * n);
+function resolverTaxa(P, n, V) { // taxa mensal que faz V = valor presente de n parcelas P
+  if (!(P > 0 && n > 0 && V > 0) || V >= P*n) return null;
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 60; k++) { const mid = (lo+hi)/2; if (PV(P, n, mid) > V) lo = mid; else hi = mid; }
+  return (lo+hi)/2;
+}
+function restantesDivida(d) {
+  if (d.restantesManual != null && d.restantesManual !== '') return Number(d.restantesManual);
+  if (!d.ultima) return 0;
+  const hojeISO = hoje(); const diaV = parseInt(d.ultima.slice(8,10));
+  let mk = hojeISO.slice(0,7), n = 0; const fimMk = d.ultima.slice(0,7);
+  while (mk <= fimMk) { if (dataMes(mk, diaV) >= hojeISO) n++; mk = addMesKey(mk, 1); }
+  return n;
+}
+function taxaDivida(d) { // fração mensal ou null
+  if (d.taxa > 0) return Number(d.taxa)/100;
+  if (d.financiado > 0 && d.total > 0) return resolverTaxa(Number(d.parcela), Number(d.total), Number(d.financiado));
+  return null;
+}
+function aPagarDivida(d) {
+  const n = restantesDivida(d), P = Number(d.parcela), i = taxaDivida(d);
+  const nominal = P * n;
+  const quitar = i != null ? PV(P, n, i) : null;
+  return { n, P, i, nominal, quitar, saldo: d.saldoDevedor > 0 ? Number(d.saldoDevedor) : (quitar != null ? quitar : nominal) };
+}
+
+// ---------- Escada de metas ----------
+const ESCADA = [
+  { n:1, t:'Equilibrar',        d:'Receita cobrindo as despesas, sem dívida nova' },
+  { n:2, t:'Reserva mínima',    d:'Ter o mínimo de meses de custo de vida na conta' },
+  { n:3, t:'Quitar dívida cara',d:'Antecipar o que custa mais que o investimento' },
+  { n:4, t:'Reserva de 6 meses',d:'Completar a meta de segurança' },
+  { n:5, t:'Investir',          d:'Aportar o excedente em ativos' },
+];
+function faseAtual(a) {
+  const c = D.config;
+  const cara = (D.dividas||[]).some(d => { const t = taxaDivida(d); return t != null && t*100 > c.rendInvest && restantesDivida(d) > 0; });
+  if (a.receita <= 0) return { n:1, falta:'Informe suas receitas para começar.' };
+  if (a.sobra < 0) return { n:1, falta:`Faltam ${R(-a.sobra)} por mês para a receita cobrir as despesas.` };
+  if (a.folego == null) return { n:2, falta:'Informe o saldo da conta (aba Caixa) para medir a reserva.' };
+  if (a.folego < c.reservaMinMeses) return { n:2, falta:`Reserva de ${a.folego.toFixed(1)} mês(es); mínimo ${c.reservaMinMeses}. Faltam ${R(Math.max(0, c.reservaMinMeses*a.ref - a.caixa))}.` };
+  if (cara) return { n:3, falta:'Há dívida com juros acima do rendimento. Veja a aba Dívidas.' };
+  if (a.folego < c.reservaMetaMeses) return { n:4, falta:`Reserva de ${a.folego.toFixed(1)} meses; meta ${c.reservaMetaMeses}. Faltam ${R(Math.max(0, c.reservaMetaMeses*a.ref - a.caixa))}.` };
+  return { n:5, falta:'Reserva completa. Direcione o excedente para ativos.' };
+}
+function escadaHTML(a) {
+  const f = faseAtual(a);
+  return ESCADA.map(s => `<div class="step ${s.n<f.n?'done':s.n===f.n?'now':''}"><span class="dot">${s.n<f.n?'✓':s.n}</span>
+    <div><div style="font-size:14px;font-weight:700">${s.t}</div><div class="ind-s" style="margin-top:2px">${s.n===f.n?f.falta:s.d}</div></div></div>`).join('');
+}
+
+// ---------- Semáforo na tela ----------
 function simularCompra(valor, n) {
   const a = calcAdvisor();
   if (a.receita <= 0) return { st:'sem', motivos:[{n:'amarelo',msg:'Cadastre sua receita para simular.'}] };
@@ -2260,20 +2681,18 @@ function simularCompra(valor, n) {
   let pior = null;
   for (let i = 1; i <= meses; i++) {
     const m = addMesKey(a.mes, i);
-    const gastoM = totalFixosPix(m) + gastoCartaoMes(m).pessoal + parc;
+    const gastoM = totalFixosPix(m) + gastoCartaoMes(m).pessoal + mediaAvista() + parc;
     const sobra = a.receita - gastoM;
     const sobraPct = sobra/a.receita*100;
     const parcPct = (parcelasMes(m) + (n>1?parc:0)) / a.receita * 100;
     if (!pior || sobraPct < pior.sobraPct) pior = { m, sobra, sobraPct, parcPct };
   }
-  const cl = classificar(pior.sobraPct, pior.parcPct, a.juros);
+  const cl = classificar(pior.sobraPct, pior.parcPct, a.juros, { sobra: pior.sobra, caixa: a.caixa });
   let st = cl.st;
   const motivos = cl.motivos.slice();
-  // se o mês atual já está no vermelho, nenhuma compra nova pode ficar verde
   if (RANK[a.st] > RANK[st]) { st = a.st; motivos.unshift({n:a.st, msg:'Sua situação atual já está no ' + (a.st==='vermelho'?'vermelho':'amarelo') + '.'}); }
   return { st, parc, pior, motivos, n };
 }
-// Maior valor que ainda mantém o semáforo verde, em n parcelas
 function valorMaximoVerde(n) {
   let lo = 0, hi = 200000;
   if (simularCompra(1, n).st !== 'verde') return 0;
@@ -2286,7 +2705,7 @@ function valorMaximoVerde(n) {
 
 const SEM = {
   verde:    { emoji:'🟢', titulo:'Luz verde', frase:'Pode comprar com tranquilidade, dentro do que você planejou.', cor:'var(--green)', bg:'var(--green-bg)' },
-  amarelo:  { emoji:'🟡', titulo:'Atenção',   frase:'Compre só o necessário. Evite novas parcelas.',                cor:'var(--amber)', bg:'var(--amber-bg)' },
+  amarelo:  { emoji:'🟡', titulo:'Atenção',   frase:'Compre só o necessário. Evite novas parcelas e dívidas.',      cor:'var(--amber)', bg:'var(--amber-bg)' },
   vermelho: { emoji:'🔴', titulo:'Segure os gastos', frase:'Sem novas compras ou dívidas até a situação melhorar.', cor:'var(--red)',   bg:'var(--red-bg)' },
   sem:      { emoji:'⚪', titulo:'Falta a receita', frase:'Informe quanto entra por mês para o semáforo funcionar.', cor:'var(--text2)', bg:'var(--surface2)' },
 };
@@ -2298,13 +2717,19 @@ function luzesHTML(st, size) {
 
 function heroHome() {
   const a = calcAdvisor(); const s = SEM[a.st];
-  const linha = a.st === 'sem'
+  let linha = a.st === 'sem'
     ? 'Toque para informar sua receita mensal'
     : `Sobra do mês: <strong>${R(a.sobra)}</strong> (${a.sobraPct.toFixed(0)}% da receita)`;
+  let caixaLinha = '';
+  if (a.sim) {
+    caixaLinha = a.sim.primeiroNeg
+      ? `<div class="hero-s" style="color:var(--red);font-weight:700;margin-top:4px">⚠️ Vai faltar caixa em ${fmtDM(a.sim.primeiroNeg.date)} (${a.sim.primeiroNeg.desc})</div>`
+      : `<div class="hero-s" style="margin-top:4px;color:${s.cor}">Caixa cobre até ${fmtDM(a.sim.fim)} · menor saldo ${RM(a.sim.min)}</div>`;
+  }
   return `<div class="hero" style="background:${s.bg};border-color:${s.cor}" onclick="goPageById('conselho')">
     ${luzesHTML(a.st, 18)}
     <div class="hero-body"><div class="hero-t" style="color:${s.cor}">${s.titulo}</div>
-    <div class="hero-s" style="color:${s.cor}">${linha}</div></div>
+    <div class="hero-s" style="color:${s.cor}">${linha}</div>${caixaLinha}</div>
     <span style="color:${s.cor};font-size:20px">›</span></div>`;
 }
 
@@ -2318,59 +2743,82 @@ function indCard(titulo, valor, sub, pct, cor, nota) {
 function dicasAdvisor(a) {
   const d = [];
   if (a.receita <= 0) { d.push('Comece informando suas fontes de renda. Sem isso não dá para saber se você está evoluindo.'); return d; }
-  if (a.sobra < 0) d.push(`Você gastou ${R(-a.sobra)} a mais do que ganhou este mês. Essa é a "corrida dos ratos": ganha, gasta tudo e ainda se endivida. Corte antes de qualquer investimento.`);
-  else if (a.aportesMes < a.aporteMeta && a.sobra > 0) d.push(`Pague-se primeiro: separe ${D.config.aportePct}% da receita (${R(a.aporteMeta)}) para ativos <em>antes</em> de gastar. Neste mês você aportou ${R(a.aportesMes)}.`);
+  if (a.sim && a.sim.primeiroNeg) d.push(`Pela projeção, a conta fica negativa em ${fmtDM(a.sim.primeiroNeg.date)}. Antecipe receitas, adie gastos que não são essenciais ou reorganize vencimentos antes dessa data.`);
+  if (a.sobra < 0) d.push(`Você gasta ${R(-a.sobra)} a mais do que ganha por mês. Enquanto a diferença sai da reserva, a regra é não criar dívida nova e cortar o que não é essencial. Essa é a "corrida dos ratos": ganhar e gastar tudo.`);
+  else if (a.aportesMes < a.aporteMeta && a.sobra > 0) d.push(`Pague-se primeiro: separe ${D.config.aportePct}% da receita (${R(a.aporteMeta)}) para reserva/ativos <em>antes</em> de gastar. Neste mês você aportou ${R(a.aportesMes)}.`);
   if (a.passiva === 0) d.push('Você ainda não tem renda passiva. A meta inicial: uma fonte que pague uma conta fixa sozinha (ex.: aluguel, dividendos, renda fixa). Registre em Receitas como "passiva".');
   else if (a.passivaPct < 100) d.push(`Sua renda passiva cobre ${a.passivaPct.toFixed(0)}% das despesas. Ao chegar em 100% você sai da corrida dos ratos.`);
   if (a.juros.n > 0) d.push(`Parcelar fatura é dívida cara (juros de cartão passam de 3% ao mês). Priorize quitar antes de comprar qualquer coisa nova.`);
-  if (a.parcPct > D.config.limParcelas) d.push(`Parcelas já comprometem ${a.parcPct.toFixed(0)}% da receita do próximo mês. Compra parcelada é passivo: só entra se gerar retorno ou for necessidade.`);
+  if (a.parcPct > D.config.limParcelas) d.push(`Parcelas já comprometem ${a.parcPct.toFixed(0)}% da receita do próximo mês. Compra parcelada é passivo: só entra se for necessidade.`);
   if (a.cart.igui > 0) d.push(`Há ${R(a.cart.igui)} de iGUi a reembolsar neste mês. Não conte como sobra até o dinheiro cair — quando cair, vai para caixa/ativos, não para consumo.`);
-  const meta = D.config.meta;
-  if (a.gasto > meta) d.push(`O custo de vida do mês (${R(a.gasto)}) passou da sua meta de ${R(meta)}. Os gastos que mais pesam estão em Faturas > categorias.`);
+  if (a.avista > 0 && a.receita > 0 && a.avista/a.receita > 0.1) d.push(`Pix/débito do dia a dia soma ${R(a.avista)} (${(a.avista/a.receita*100).toFixed(0)}% da receita). Gastos pequenos pesam mais do que parecem.`);
+  const ult = ((D.caixa||{}).historico||[]).slice(-1)[0];
+  if (ult && ult.diff < -200) d.push(`Na última conferência de saldo faltaram ${R(-ult.diff)} que você não lançou. Esse é o seu vazamento de gastos miúdos.`);
+  if (a.gasto > D.config.meta) d.push(`O custo de vida do mês (${R(a.gasto)}) passou da meta de ${R(D.config.meta)}.`);
   if (a.st === 'verde') d.push('Situação saudável. O próximo passo é transformar a sobra em ativos: o que entra no bolso de forma recorrente sem você trabalhar.');
   return d;
 }
 
+// ---------- Tela: abas ----------
+let consTab = 'visao';
+function setConsTab(t) { consTab = t; renderConselho(); window.scrollTo(0,0); }
+
 function renderConselho() {
-  const a = calcAdvisor(); const s = SEM[a.st]; const c = D.config;
+  const a = calcAdvisor();
+  const tabs = [['visao','Visão'],['caixa','Caixa'],['dividas','Dívidas'],['receitas','Receitas']];
+  const body = consTab==='caixa' ? consCaixa(a) : consTab==='dividas' ? consDividas(a) : consTab==='receitas' ? consReceitas(a) : consVisao(a);
+  document.getElementById('page-conselho').innerHTML = `
+    <div class="sec-title">Conselheiro</div>
+    <div class="tabs">${tabs.map(([k,l])=>`<button class="tab ${consTab===k?'active':''}" onclick="setConsTab('${k}')">${l}</button>`).join('')}</div>
+    ${body}
+    <p class="nota" style="text-align:center;margin:4px 0 16px">O semáforo é uma orientação baseada em regras simples e nos seus próprios dados. Não substitui um consultor financeiro.</p>`;
+  if (consTab==='visao') rodarSimulador();
+  if (consTab==='dividas') (D.dividas||[]).forEach(d => rodarAntecipacao(d.id));
+}
+
+// ---------- Aba Visão ----------
+function consVisao(a) {
+  const s = SEM[a.st]; const c = D.config;
   const corSobra = a.sobraPct >= c.verdeSobra ? 'var(--green)' : a.sobraPct >= c.amareloSobra ? 'var(--amber)' : 'var(--red)';
   const corParc = a.parcPct <= c.limParcelas ? 'var(--green)' : a.parcPct <= c.limParcelas+10 ? 'var(--amber)' : 'var(--red)';
   const motivosHtml = a.motivos.length ? a.motivos.map(m=>`<div class="motivo">${m.n==='vermelho'?'🔴':m.n==='amarelo'?'🟡':'🟢'} ${m.msg}</div>`).join('') : (a.st==='verde'?'<div class="motivo">🟢 Sobra, parcelas e dívidas dentro dos limites.</div>':'');
-
-  const recHtml = a.lista.length ? a.lista.map(r=>`<div class="linha"><div><div style="font-size:14px;font-weight:600">${escH(r.fonte)}</div><span class="badge ${r.tipo==='passiva'?'badge-green':'badge-gray'}">${r.tipo==='passiva'?'passiva':'ativa'}</span></div>
-      <div style="display:flex;align-items:center;gap:8px"><strong>${R(r.valor)}</strong><button class="action-btn" onclick="removerReceita('${r.id}')">🗑️</button></div></div>`).join('') : '<div class="empty" style="padding:14px">Nenhuma receita cadastrada.</div>';
-
-  const aportes = (D.aportes||[]).slice().sort((x,y)=>y.data.localeCompare(x.data));
-  const totalAtivos = aportes.reduce((t,x)=>t+Number(x.valor),0);
-  const apHtml = aportes.slice(0,5).map(x=>`<div class="linha"><div><div style="font-size:14px;font-weight:600">${escH(x.desc)}</div><div style="font-size:12px;color:var(--text3)">${fmtD(x.data)}</div></div>
-      <div style="display:flex;align-items:center;gap:8px"><strong>${R(x.valor)}</strong><button class="action-btn" onclick="removerAporte('${x.id}')">🗑️</button></div></div>`).join('');
-
-  document.getElementById('page-conselho').innerHTML = `
-    <div class="sec-title">Conselheiro</div>
+  const caixaTxt = a.sim ? (a.sim.primeiroNeg
+      ? `<div class="motivo" style="color:var(--red);font-weight:700">⚠️ Caixa: a conta fica negativa em ${fmtDM(a.sim.primeiroNeg.date)}.</div>`
+      : `<div class="motivo">💰 Caixa: cobre todos os compromissos até ${fmtDM(a.sim.fim)}.</div>`) : '';
+  return `
     <div class="hero hero-big" style="background:${s.bg};border-color:${s.cor};cursor:default">
       ${luzesHTML(a.st, 34)}
       <div class="hero-t" style="color:${s.cor};font-size:22px;margin-top:12px">${s.titulo}</div>
       <div style="color:${s.cor};font-size:14px;margin-top:4px;line-height:1.5">${s.frase}</div>
-      ${motivosHtml?`<div style="margin-top:12px;text-align:left">${motivosHtml}</div>`:''}
+      <div style="margin-top:12px;text-align:left">${motivosHtml}${caixaTxt}</div>
     </div>
 
     <div class="card">
       <div class="card-title">Resumo de ${NOME_MES(a.mes)}</div>
-      <div class="linha"><span>Receita</span><strong>${R(a.receita)}</strong></div>
-      <div class="linha"><span>Contas fixas (Pix)</span><strong>− ${R(a.fixos)}</strong></div>
+      <div class="linha"><span>Receita fixa</span><strong>${R(a.receita)}</strong></div>
+      <div class="linha"><span>Contas fixas (Pix/débito)</span><strong>− ${R(a.fixos)}</strong></div>
       <div class="linha"><span>Faturas que vencem no mês</span><strong>− ${R(a.cart.bruto)}</strong></div>
       <div class="linha"><span>Reembolso iGUi nas faturas</span><strong style="color:var(--green)">+ ${R(a.cart.igui)}</strong></div>
+      <div class="linha"><span>Pix/débito lançados</span><strong>− ${R(a.avista)}</strong></div>
       <div class="linha" style="border-top:1.5px solid var(--border2);padding-top:10px"><span><strong>Sobra do mês</strong></span><strong style="color:${a.sobra>=0?'var(--green)':'var(--red)'};font-size:17px">${R(a.sobra)}</strong></div>
-      ${a.herdada?`<p class="nota">Receita repetida de ${NOME_MES(a.herdada)}. Edite abaixo se mudou.</p>`:''}
+      ${a.variavel>0?`<p class="nota">Comissão/variável do mês: ${R(a.variavel)} (não entra no semáforo).</p>`:''}
+      ${a.herdada?`<p class="nota">Receita repetida de ${NOME_MES(a.herdada)}. Edite na aba Receitas se mudou.</p>`:''}
+    </div>
+
+    <div class="card">
+      <div class="card-title">🪜 Escada de metas</div>
+      ${escadaHTML(a)}
     </div>
 
     <div class="ind-grid">
       ${indCard('Sobra do mês', a.receita>0?a.sobraPct.toFixed(0)+'%':'—', `meta: ${c.verdeSobra}% ou mais`, a.sobraPct/Math.max(c.verdeSobra,1)*100, corSobra)}
+      ${indCard('Fôlego de caixa', a.folego!=null?a.folego.toFixed(1)+' m':'—', a.folego!=null?`meta ${c.reservaMetaMeses} meses (${RM(c.reservaMetaMeses*a.ref)})`:'informe o saldo na aba Caixa', a.folego!=null?a.folego/c.reservaMetaMeses*100:0, 'var(--blue)')}
       ${indCard('Parcelas no próx. mês', a.receita>0?a.parcPct.toFixed(0)+'%':'—', `${R(a.parcProx)} · limite ${c.limParcelas}%`, a.parcPct/Math.max(c.limParcelas,1)*100, corParc)}
-      ${indCard('Custo de vida', R(a.gasto,0), `meta mensal ${R(c.meta,0)}`, a.gasto/c.meta*100, a.gasto<=c.meta?'var(--green)':'var(--red)')}
+      ${indCard('Custo de vida', RM(a.gasto), `meta mensal ${RM(c.meta)}`, a.gasto/c.meta*100, a.gasto<=c.meta?'var(--green)':'var(--red)')}
       ${indCard('Renda passiva', a.passivaPct.toFixed(0)+'%', `das despesas · meta 100%`, a.passivaPct, 'var(--blue)', a.passiva===0?'Ponto de partida':'')}
-      ${indCard('Pague-se primeiro', R(a.aportesMes,0), `meta ${R(a.aporteMeta,0)} (${c.aportePct}%)`, a.aporteMeta>0?a.aportesMes/a.aporteMeta*100:0, 'var(--green)')}
-      ${indCard('Juros (90 dias)', a.juros.n+'x', a.juros.n?`parcelou fatura · ${R(a.juros.total,0)}`:'nenhum parcelamento de fatura', a.juros.n*50, a.juros.n?'var(--red)':'var(--green)')}
+      ${indCard('Pague-se primeiro', RM(a.aportesMes), `meta ${RM(a.aporteMeta)} (${c.aportePct}%)`, a.aporteMeta>0?a.aportesMes/a.aporteMeta*100:0, 'var(--green)')}
+      ${indCard('Pix/débito no mês', RM(avistaMes(a.mes)), `média recente ${RM(mediaAvista())}`, a.receita>0?avistaMes(a.mes)/a.receita*1000:0, 'var(--amber)')}
+      ${indCard('Juros (90 dias)', a.juros.n+'x', a.juros.n?`parcelou fatura · ${RM(a.juros.total)}`:'nenhum parcelamento de fatura', a.juros.n*50, a.juros.n?'var(--red)':'var(--green)')}
     </div>
 
     <div class="card">
@@ -2383,56 +2831,9 @@ function renderConselho() {
     </div>
 
     <div class="card">
-      <div class="card-title">💵 Receitas do mês</div>
-      ${recHtml}
-      <div style="margin-top:12px">
-        <label class="field-label" style="margin-top:0">Nova fonte</label>
-        <input type="text" id="r-fonte" placeholder="Ex: Pró-labore iGUi, Aluguel, Dividendos">
-        <div class="field-row" style="margin-top:10px">
-          <input type="text" inputmode="decimal" id="r-valor" placeholder="0,00" oninput="maskMoeda(this)">
-          <select id="r-tipo"><option value="ativa">Ativa (trabalho)</option><option value="passiva">Passiva (ativos)</option></select>
-        </div>
-        <button class="btn btn-accent" style="margin-top:10px" onclick="addReceita()">+ Adicionar receita</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">🌱 Meus ativos (aportes)</div>
-      <div class="linha"><span>Total já investido</span><strong style="color:var(--green);font-size:17px">${R(totalAtivos)}</strong></div>
-      ${apHtml}
-      <div style="margin-top:12px">
-        <input type="text" id="a-desc" placeholder="Onde investiu? (Ex: Tesouro, CDB, imóvel)">
-        <div class="field-row" style="margin-top:10px">
-          <input type="text" inputmode="decimal" id="a-valor" placeholder="0,00" oninput="maskMoeda(this)">
-          <input type="date" id="a-data" value="${hoje()}">
-        </div>
-        <button class="btn btn-accent" style="margin-top:10px" onclick="addAporte()">+ Registrar aporte</button>
-      </div>
-    </div>
-
-    <div class="card">
       <div class="card-title">📖 Orientações</div>
       ${dicasAdvisor(a).map(t=>`<div class="dica">${t}</div>`).join('')}
-    </div>
-
-    <div class="card">
-      <div class="card-title">⚙️ Limites do semáforo</div>
-      <div class="field-row">
-        <div><label class="field-label" style="margin-top:0">Meta custo de vida (R$)</label><input type="text" inputmode="decimal" id="cfg-meta" value="${R(c.meta).replace('R$','').trim()}" oninput="maskMoeda(this)"></div>
-        <div><label class="field-label" style="margin-top:0">Aportar (% receita)</label><input type="number" id="cfg-aporte" value="${c.aportePct}"></div>
-      </div>
-      <div class="field-row">
-        <div><label class="field-label">Verde: sobra ≥ (%)</label><input type="number" id="cfg-verde" value="${c.verdeSobra}"></div>
-        <div><label class="field-label">Vermelho: sobra &lt; (%)</label><input type="number" id="cfg-amarelo" value="${c.amareloSobra}"></div>
-      </div>
-      <label class="field-label">Limite de parcelas (% da receita)</label>
-      <input type="number" id="cfg-parc" value="${c.limParcelas}">
-      <button class="btn btn-secondary" onclick="salvarConfig()">Salvar limites</button>
-      <button class="btn btn-secondary" style="margin-top:8px" onclick="resetarConfig()">Voltar ao padrão</button>
-    </div>
-    <p class="nota" style="text-align:center;margin:4px 0 16px">O semáforo é uma orientação baseada em regras simples e nos seus próprios dados. Não substitui um consultor financeiro.</p>
-  `;
-  rodarSimulador();
+    </div>`;
 }
 
 function rodarSimulador() {
@@ -2453,18 +2854,294 @@ function rodarSimulador() {
     ${r.motivos.map(m=>`<div style="font-size:12px;margin-top:4px">${m.n==='vermelho'?'🔴':'🟡'} ${m.msg}</div>`).join('')}
     <div style="font-size:12px;margin-top:8px;opacity:.9">${max>0?`Em ${n}x, o máximo com folga (verde) é ${R(max,0)}.`:'Hoje nenhum valor novo cabe no verde.'}</div>
   </div>
-  <p class="nota">Considera receita informada, contas fixas e parcelas já lançadas. Compras futuras ainda não lançadas não entram.</p>`;
+  <p class="nota">Considera receita informada, contas fixas, parcelas já lançadas e a média de Pix/débito. Compras futuras ainda não lançadas não entram.</p>`;
+}
+
+// ---------- Aba Caixa ----------
+function consCaixa(a) {
+  const c = D.caixa; const sim = a.sim;
+  const saldoCard = `
+    <div class="card">
+      <div class="card-title">🏦 Saldo da conta</div>
+      <label class="field-label" style="margin-top:0">Quanto tem na conta agora? (R$)</label>
+      <input type="text" inputmode="decimal" id="cx-saldo" placeholder="${c.saldo!=null?R(c.saldo).replace('R$','').trim():'0,00'}" oninput="maskMoeda(this)">
+      <button class="btn btn-primary" style="margin-top:10px" onclick="atualizarSaldo()">Atualizar saldo</button>
+      ${c.saldo!=null?`<p class="nota">Último saldo: <strong>${R(c.saldo)}</strong> em ${fmtD(c.data)}.${sim&&sim.diasDesatualizado>=5?` <span style="color:var(--amber);font-weight:600">Faz ${sim.diasDesatualizado} dias — atualize para a previsão ficar precisa.</span>`:''}</p>`:'<p class="nota">Informe o saldo para ver se o dinheiro vai até o fim do mês. Atualize de tempos em tempos (uma vez por semana já ajuda).</p>'}
+    </div>`;
+  if (!sim) return saldoCard;
+
+  const falta = sim.primeiroNeg;
+  const alerta = falta
+    ? `<div class="alert alert-red" style="font-weight:600">⚠️ Vai faltar caixa em <strong>${fmtDM(falta.date)}</strong> (${escH(falta.desc)}). O menor saldo previsto é <strong>${R(sim.min)}</strong> em ${fmtDM(sim.minDate)}.</div>`
+    : `<div class="alert alert-ok" style="font-weight:600">✅ O caixa cobre todos os compromissos até ${fmtDM(sim.fim)}. Menor saldo previsto: <strong>${R(sim.min)}</strong> em ${fmtDM(sim.minDate)}.</div>`;
+
+  // previsão do próximo mês
+  const p = calcAdvisor(sim.prox); const sp = SEM[p.st];
+  const prevCard = `
+    <div class="card">
+      <div class="card-title">🔮 Previsão de ${NOME_MES_CURTO(sim.prox)}</div>
+      <p class="nota" style="margin-top:-4px;margin-bottom:8px">Receitas iguais às atuais e só os gastos já lançados (parcelas, fixos e média de Pix/débito).</p>
+      <div class="linha"><span>Receita fixa</span><strong>${R(p.receita)}</strong></div>
+      <div class="linha"><span>Contas fixas</span><strong>− ${R(p.fixos)}</strong></div>
+      <div class="linha"><span>Faturas (parcelas já lançadas)</span><strong>− ${R(p.cart.bruto)}</strong></div>
+      <div class="linha"><span>Reembolso iGUi previsto</span><strong style="color:var(--green)">+ ${R(p.cart.igui)}</strong></div>
+      <div class="linha"><span>Pix/débito (média recente)</span><strong>− ${R(p.avista)}</strong></div>
+      <div class="linha" style="border-top:1.5px solid var(--border2);padding-top:10px"><span><strong>Sobra prevista</strong></span><strong style="color:${p.sobra>=0?'var(--green)':'var(--red)'};font-size:17px">${R(p.sobra)}</strong></div>
+      ${p.receita>0?`<div style="margin-top:10px;display:flex;align-items:center;gap:10px">${luzesHTML(p.st,14)}<span style="font-size:13px;color:${sp.cor};font-weight:600">${sp.titulo}</span></div>`:''}
+      <p class="nota">Compras novas no cartão que ainda não foram lançadas vão aumentar a fatura e reduzir essa sobra.</p>
+    </div>`;
+
+  const livreCard = `
+    <div class="card" style="border:1.5px solid var(--green)">
+      <div class="card-title">💡 Dinheiro livre de verdade</div>
+      <div style="font-size:30px;font-weight:800;letter-spacing:-1px;color:${sim.livre>0?'var(--green)':'var(--red)'}">${R(sim.livre)}</div>
+      <p class="nota" style="font-size:13px;line-height:1.6;color:var(--text2)">É o que dá para usar agora (investir ou antecipar dívida) sem a conta ficar abaixo da reserva mínima de ${R(D.config.reservaMin||0)} até ${fmtDM(sim.fim)}. Cálculo: menor saldo previsto (${R(sim.min)}) − reserva mínima.</p>
+    </div>`;
+
+  const nums = `
+    <div class="ind-grid">
+      ${indCard('Saldo estimado hoje', RM(sim.saldoHoje), `base ${RM(c.saldo)} em ${fmtDM(c.data)}`, 100, sim.saldoHoje>=0?'var(--blue)':'var(--red)')}
+      ${indCard('Fim de '+NOME_MES_CURTO(sim.mkAtual), RM(sim.fimAtual), 'depois de tudo que vence', 100, sim.fimAtual>=0?'var(--green)':'var(--red)')}
+      ${indCard('Fim de '+NOME_MES_CURTO(sim.prox), RM(sim.fimProx), 'projeção', 100, sim.fimProx>=0?'var(--green)':'var(--red)')}
+      ${indCard('Menor saldo', RM(sim.min), `em ${fmtDM(sim.minDate)}`, 100, sim.min>=0?'var(--green)':'var(--red)')}
+    </div>`;
+
+  const iguiPend = a.cart.igui;
+  const rows = sim.linha.length ? sim.linha.map(e => {
+    const pago = e.tipo==='cartao' ? `<button class="action-btn" style="font-size:11px;padding:3px 8px" onclick="marcarFaturaPaga('${e.key}')">já paguei</button>` : '';
+    return `<div class="linha" style="align-items:flex-start"><div style="min-width:0"><div style="font-size:13px;font-weight:600">${fmtDM(e.date)} · ${e.tipo==='receita'?'⬆️':'⬇️'} ${escH(e.desc)}</div>
+      <div style="font-size:12px;color:${e.valor>=0?'var(--green)':'var(--text2)'}">${e.valor>=0?'+':'−'} ${R(Math.abs(e.valor))}</div></div>
+      <div style="text-align:right;flex-shrink:0"><div style="font-size:13px;font-weight:700;color:${e.saldo<0?'var(--red)':'var(--text)'}">${R(e.saldo)}</div>${pago}</div></div>`;
+  }).join('') : '<div class="empty" style="padding:14px">Nenhum compromisso previsto.</div>';
+  const timeline = `
+    <div class="card">
+      <div class="card-title">📅 Linha do tempo do saldo</div>
+      <p class="nota" style="margin-top:-4px;margin-bottom:6px">Mostra o que entra e sai da conta, dia a dia, até ${fmtDM(sim.fim)}. Se já pagou uma fatura, toque em "já paguei".</p>
+      ${rows}
+      ${D.config.diaReembolso>0||iguiPend<=0?'':`<p class="nota">Reembolso iGUi de ${R(iguiPend)} não está incluído porque o dia de recebimento não foi definido (aba Receitas → Ajustes).</p>`}
+    </div>`;
+
+  const hist = (c.historico||[]).slice(-5).reverse();
+  const histCard = hist.length ? `
+    <div class="card">
+      <div class="card-title">🔍 Conferência do saldo</div>
+      <p class="nota" style="margin-top:-4px;margin-bottom:6px">Compara o saldo real com o que o app esperava. Diferença negativa = saiu dinheiro que não foi lançado (gastos miúdos).</p>
+      ${hist.map(h=>`<div class="linha"><div><div style="font-size:13px;font-weight:600">${fmtD(h.data)}</div><div style="font-size:12px;color:var(--text3)">esperado ${R(h.esperado)} · real ${R(h.saldo)}</div></div>
+        <strong style="color:${Math.abs(h.diff)<50?'var(--text2)':h.diff<0?'var(--red)':'var(--green)'}">${h.diff>=0?'+':'−'} ${R(Math.abs(h.diff))}</strong></div>`).join('')}
+    </div>` : '';
+
+  return saldoCard + alerta + livreCard + nums + prevCard + timeline + histCard;
+}
+
+function atualizarSaldo() {
+  const v = parseMoeda(document.getElementById('cx-saldo').value);
+  if (isNaN(v)) { showToast('Digite o saldo da conta'); return; }
+  const sim = simularCaixa();
+  const agora = new Date();
+  const c = D.caixa;
+  if (sim && c.ts && sim.diasDesatualizado >= 1) {
+    c.historico = (c.historico||[]).concat([{ data: isoLocal(agora), saldo: v, esperado: sim.saldoHoje, diff: v - sim.saldoHoje }]).slice(-24);
+  }
+  c.saldo = v; c.data = isoLocal(agora); c.ts = agora.toISOString();
+  save(); renderConselho(); showToast('Saldo atualizado');
+}
+function marcarFaturaPaga(key) {
+  D.caixa.pagos = D.caixa.pagos || {};
+  D.caixa.pagos[key] = true;
+  save(); renderConselho(); showToast('Fatura marcada como paga');
+}
+
+// ---------- Aba Dívidas ----------
+function consDividas(a) {
+  const lista = D.dividas || [];
+  const cards = lista.map(d => {
+    const x = aPagarDivida(d); const tx = x.i != null ? (x.i*100).toFixed(2).replace('.',',')+'% a.m.' : 'taxa não informada';
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div><div style="font-size:16px;font-weight:700">${escH(d.nome)}</div>
+        <div class="ind-s">${R(x.P)} × ${x.n} parcela(s) restante(s)${d.ultima?` · última em ${fmtD(d.ultima)}`:''}</div></div>
+        <button class="action-btn" onclick="removerDivida('${d.id}')">🗑️</button>
+      </div>
+      <div class="linha"><span>Falta pagar (nominal)</span><strong>${R(x.nominal)}</strong></div>
+      <div class="linha"><span>Juros do contrato</span><strong>${tx}</strong></div>
+      ${x.quitar!=null?`<div class="linha"><span>Quitar hoje (estimativa)</span><strong>${R(x.quitar)}</strong></div>
+      <div class="linha"><span>Desconto estimado</span><strong style="color:var(--green)">${R(x.nominal - x.quitar)}</strong></div>`:'<p class="nota">Informe a taxa mensal ou o valor financiado para estimar o desconto de quitação.</p>'}
+      <div style="margin-top:12px;font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.5px">Simular antecipação</div>
+      <div class="field-row" style="margin-top:6px">
+        <div><label class="field-label" style="margin-top:0">Parcelas a antecipar (das últimas)</label><input type="number" id="ant-k-${d.id}" min="1" max="${x.n}" value="${Math.min(x.n, 12)}" oninput="rodarAntecipacao('${d.id}')"></div>
+        <div><label class="field-label" style="margin-top:0">Cotação do banco (R$)</label><input type="text" inputmode="decimal" id="ant-q-${d.id}" placeholder="opcional" oninput="maskMoeda(this);rodarAntecipacao('${d.id}')"></div>
+      </div>
+      <div id="ant-out-${d.id}" style="margin-top:10px"></div>
+    </div>`;
+  }).join('') || '<div class="card"><div class="empty" style="padding:14px">Nenhuma dívida cadastrada ainda.</div></div>';
+
+  const totalPagar = lista.reduce((s,d)=>s+aPagarDivida(d).saldo,0);
+  const ativos = (D.aportes||[]).reduce((t,x)=>t+Number(x.valor),0);
+  const pat = (a.caixa!=null?a.caixa:0) + ativos - totalPagar;
+  const patCard = `<div class="card"><div class="card-title">📊 Patrimônio líquido (estimado)</div>
+    <div class="linha"><span>Caixa na conta</span><strong>${a.caixa!=null?R(a.caixa):'—'}</strong></div>
+    <div class="linha"><span>Ativos (aportes)</span><strong>${R(ativos)}</strong></div>
+    <div class="linha"><span>Dívidas a pagar</span><strong>− ${R(totalPagar)}</strong></div>
+    <div class="linha" style="border-top:1.5px solid var(--border2);padding-top:10px"><span><strong>Patrimônio líquido</strong></span><strong style="color:${pat>=0?'var(--green)':'var(--red)'};font-size:17px">${R(pat)}</strong></div>
+    <p class="nota">Não inclui bens como o carro ou imóveis. Mostra o quanto do que você tem já é "livre" das dívidas.</p></div>`;
+
+  return `${cards}
+    <div class="card">
+      <div class="card-title">+ Cadastrar dívida</div>
+      <label class="field-label" style="margin-top:0">Nome</label>
+      <input type="text" id="dv-nome" placeholder="Ex: Financiamento do carro, Empréstimo banco">
+      <div class="field-row"><div><label class="field-label">Valor da parcela (R$)</label><input type="text" inputmode="decimal" id="dv-parcela" placeholder="0,00" oninput="maskMoeda(this)"></div>
+        <div><label class="field-label">Última parcela</label><input type="date" id="dv-ultima"></div></div>
+      <div class="field-row"><div><label class="field-label">Juros ao mês (%) — se souber</label><input type="text" inputmode="decimal" id="dv-taxa" placeholder="Ex: 1,85"></div>
+        <div><label class="field-label">Parcelas restantes (se quiser ajustar)</label><input type="number" id="dv-rest" placeholder="auto"></div></div>
+      <div class="field-row"><div><label class="field-label">Valor financiado (R$)</label><input type="text" inputmode="decimal" id="dv-fin" placeholder="opcional" oninput="maskMoeda(this)"></div>
+        <div><label class="field-label">Nº total de parcelas</label><input type="number" id="dv-total" placeholder="Ex: 36"></div></div>
+      <p class="nota">Sem a taxa, informe o valor financiado e o total de parcelas: o app calcula os juros do contrato. Para valores exatos, peça ao banco a "quitação antecipada" e digite a cotação na simulação.</p>
+      <button class="btn btn-accent" onclick="addDivida()">Cadastrar dívida</button>
+    </div>
+    ${patCard}`;
+}
+
+function rodarAntecipacao(id) {
+  const d = (D.dividas||[]).find(x=>x.id===id); const out = document.getElementById('ant-out-'+id); if (!d || !out) return;
+  const x = aPagarDivida(d);
+  const k = Math.max(1, Math.min(x.n, parseInt(document.getElementById('ant-k-'+id).value)||1));
+  const q = parseMoeda(document.getElementById('ant-q-'+id).value);
+  const rend = D.config.rendInvest;
+  const a = calcAdvisor(); const livre = a.sim ? a.sim.livre : null;
+  let html = '';
+  if (x.n <= 0) { out.innerHTML = '<div class="nota">Sem parcelas restantes.</div>'; return; }
+  // custo de antecipar as k últimas parcelas
+  let custo = null, ef = x.i;
+  if (q > 0) {
+    // cotação do banco para quitar TODAS as parcelas restantes
+    ef = resolverTaxa(x.P, x.n, q);
+    html += `<div class="linha"><span>Quitar tudo (cotação do banco)</span><strong>${R(q)}</strong></div>
+      <div class="linha"><span>Desconto do banco</span><strong style="color:var(--green)">${R(x.nominal - q)} (${((x.nominal-q)/x.nominal*100).toFixed(1)}%)</strong></div>`;
+    if (ef != null) html += `<div class="linha"><span>Juros implícitos</span><strong>${(ef*100).toFixed(2).replace('.',',')}% a.m.</strong></div>`;
+    custo = q;
+  } else if (x.i != null) {
+    let s = 0; for (let j = x.n-k+1; j <= x.n; j++) s += x.P / Math.pow(1+x.i, j);
+    custo = s;
+    html += `<div class="linha"><span>Antecipar ${k} última(s)</span><strong>${R(s)}</strong></div>
+      <div class="linha"><span>Valor nominal delas</span><strong>${R(x.P*k)}</strong></div>
+      <div class="linha"><span>Economia estimada</span><strong style="color:var(--green)">${R(x.P*k - s)}</strong></div>`;
+  } else { out.innerHTML = '<div class="nota">Informe a taxa ou o valor financiado para simular.</div>'; return; }
+  if (ef != null) {
+    const efPct = ef*100;
+    const vence = efPct > rend;
+    html += `<div class="sim-res" style="margin-top:10px;background:${vence?'var(--green-bg)':'var(--amber-bg)'};border-color:${vence?'var(--green)':'var(--amber)'};color:${vence?'var(--green)':'var(--amber)'}">
+      <div style="font-size:14px;font-weight:700">${vence?'Antecipar compensa mais':'Investir pode compensar mais'}</div>
+      <div style="font-size:13px;margin-top:4px;line-height:1.5">Antecipar equivale a render <strong>${efPct.toFixed(2).replace('.',',')}% a.m.</strong>, sem risco. Seu investimento rende ${String(rend).replace('.',',')}% a.m. (ajuste na aba Receitas → Ajustes).</div>
+      ${livre!=null?`<div style="font-size:13px;margin-top:6px;line-height:1.5">${custo<=livre?`✅ Cabe no seu dinheiro livre (${R(livre)}).`:`⚠️ Passa do seu dinheiro livre (${R(livre)}) em ${R(custo-livre)}. Use só o que sobra, mantendo a reserva mínima.`}</div>`:'<div style="font-size:12px;margin-top:6px">Informe o saldo na aba Caixa para ver se cabe no dinheiro livre.</div>'}
+    </div>`;
+  }
+  out.innerHTML = html;
+}
+
+function addDivida() {
+  const g = id => document.getElementById(id).value;
+  const nome = g('dv-nome').trim(); const parcela = parseMoeda(g('dv-parcela'));
+  if (!nome || !parcela || parcela <= 0) { showToast('Informe nome e valor da parcela'); return; }
+  const ultima = g('dv-ultima'); const rest = g('dv-rest');
+  if (!ultima && !rest) { showToast('Informe a última parcela ou as parcelas restantes'); return; }
+  const taxa = parseFloat(g('dv-taxa').replace(',','.'));
+  const fin = parseMoeda(g('dv-fin')); const total = parseInt(g('dv-total'));
+  D.dividas.push({ id: uid(), nome, parcela, ultima: ultima||null, restantesManual: rest!==''?parseInt(rest):null,
+    taxa: taxa>0?taxa:null, financiado: fin>0?fin:null, total: total>0?total:null });
+  save(); renderConselho(); showToast('Dívida cadastrada');
+}
+function removerDivida(id) { D.dividas = D.dividas.filter(x=>x.id!==id); save(); renderConselho(); showToast('Removida'); }
+
+// ---------- Aba Receitas ----------
+function consReceitas(a) {
+  const c = D.config;
+  const recHtml = a.lista.length ? a.lista.map(r=>`<div class="linha"><div><div style="font-size:14px;font-weight:600">${escH(r.fonte)}</div>
+      <span class="badge ${r.tipo==='passiva'?'badge-green':r.tipo==='variavel'?'badge-amber':'badge-gray'}">${r.tipo==='passiva'?'passiva':r.tipo==='variavel'?'variável':'fixa'}</span>
+      ${r.tipo!=='variavel'?`<span style="font-size:12px;color:var(--text3);margin-left:6px">dia <input type="number" min="1" max="31" value="${r.dia||5}" style="width:56px;padding:4px 6px;font-size:13px;display:inline-block" onchange="editarDiaReceita('${r.id}',this.value)"></span>`:''}</div>
+      <div style="display:flex;align-items:center;gap:8px"><strong>${R(r.valor)}</strong><button class="action-btn" onclick="removerReceita('${r.id}')">🗑️</button></div></div>`).join('') : '<div class="empty" style="padding:14px">Nenhuma receita cadastrada.</div>';
+
+  const aportes = (D.aportes||[]).slice().sort((x,y)=>y.data.localeCompare(x.data));
+  const totalAtivos = aportes.reduce((t,x)=>t+Number(x.valor),0);
+  const apHtml = aportes.slice(0,5).map(x=>`<div class="linha"><div><div style="font-size:14px;font-weight:600">${escH(x.desc)}</div><div style="font-size:12px;color:var(--text3)">${fmtD(x.data)}</div></div>
+      <div style="display:flex;align-items:center;gap:8px"><strong>${R(x.valor)}</strong><button class="action-btn" onclick="removerAporte('${x.id}')">🗑️</button></div></div>`).join('');
+
+  return `
+    <div class="card">
+      <div class="card-title">💵 Receitas de ${NOME_MES(a.mes)}</div>
+      ${recHtml}
+      ${a.herdada?`<p class="nota">Valores repetidos de ${NOME_MES(a.herdada)}. Ao mudar qualquer receita, o mês passa a ter lista própria.</p>`:''}
+      <div style="margin-top:12px">
+        <label class="field-label" style="margin-top:0">Nova receita</label>
+        <input type="text" id="r-fonte" placeholder="Ex: Pró-labore, Salário Danielle, Comissão">
+        <div class="field-row" style="margin-top:10px">
+          <input type="text" inputmode="decimal" id="r-valor" placeholder="0,00" oninput="maskMoeda(this)">
+          <select id="r-tipo"><option value="ativa">Fixa (trabalho)</option><option value="passiva">Passiva (ativos)</option><option value="variavel">Variável (comissão)</option></select>
+        </div>
+        <div class="field-row" style="margin-top:10px"><div><label class="field-label" style="margin-top:0">Dia do recebimento</label><input type="number" id="r-dia" min="1" max="31" value="5"></div><div></div></div>
+        <p class="nota">Comissão e outros valores variáveis não entram no semáforo nem na previsão: contam só no mês em que caem, quando você atualizar o saldo.</p>
+        <button class="btn btn-accent" style="margin-top:10px" onclick="addReceita()">+ Adicionar receita</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">🌱 Meus ativos (aportes)</div>
+      <div class="linha"><span>Total já investido</span><strong style="color:var(--green);font-size:17px">${R(totalAtivos)}</strong></div>
+      ${apHtml}
+      <div style="margin-top:12px">
+        <input type="text" id="a-desc" placeholder="Onde investiu? (Ex: Tesouro, CDB, imóvel)">
+        <div class="field-row" style="margin-top:10px">
+          <input type="text" inputmode="decimal" id="a-valor" placeholder="0,00" oninput="maskMoeda(this)">
+          <input type="date" id="a-data" value="${hoje()}">
+        </div>
+        <button class="btn btn-accent" style="margin-top:10px" onclick="addAporte()">+ Registrar aporte</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">⚙️ Ajustes e limites</div>
+      <div class="field-row">
+        <div><label class="field-label" style="margin-top:0">Meta custo de vida (R$)</label><input type="text" inputmode="decimal" id="cfg-meta" value="${R(c.meta).replace('R$','').trim()}" oninput="maskMoeda(this)"></div>
+        <div><label class="field-label" style="margin-top:0">Aportar (% receita)</label><input type="number" id="cfg-aporte" value="${c.aportePct}"></div>
+      </div>
+      <div class="field-row">
+        <div><label class="field-label">Verde: sobra ≥ (%)</label><input type="number" id="cfg-verde" value="${c.verdeSobra}"></div>
+        <div><label class="field-label">Vermelho: sobra &lt; (%)</label><input type="number" id="cfg-amarelo" value="${c.amareloSobra}"></div>
+      </div>
+      <label class="field-label">Limite de parcelas (% da receita)</label>
+      <input type="number" id="cfg-parc" value="${c.limParcelas}">
+      <div class="field-row">
+        <div><label class="field-label">Reserva mínima (R$)</label><input type="text" inputmode="decimal" id="cfg-reserva" value="${R(c.reservaMin||0).replace('R$','').trim()}" oninput="maskMoeda(this)"></div>
+        <div><label class="field-label">Reserva mínima (meses)</label><input type="number" id="cfg-resmin" value="${c.reservaMinMeses}"></div>
+      </div>
+      <div class="field-row">
+        <div><label class="field-label">Reserva meta (meses)</label><input type="number" id="cfg-resmeta" value="${c.reservaMetaMeses}"></div>
+        <div><label class="field-label">Rendimento invest. (% a.m. líquido)</label><input type="text" inputmode="decimal" id="cfg-rend" value="${String(c.rendInvest).replace('.',',')}"></div>
+      </div>
+      <label class="field-label">Dia em que o reembolso iGUi cai (0 = não considerar)</label>
+      <input type="number" id="cfg-reemb" min="0" max="31" value="${c.diaReembolso||0}">
+      <p class="nota">O rendimento de ${String(c.rendInvest).replace('.',',')}% a.m. é um valor de exemplo: troque pelo líquido do seu investimento (CDB, Tesouro) para a comparação com antecipação de dívida ficar correta.</p>
+      <button class="btn btn-secondary" onclick="salvarConfig()">Salvar ajustes</button>
+      <button class="btn btn-secondary" style="margin-top:8px" onclick="resetarConfig()">Voltar ao padrão</button>
+    </div>`;
 }
 
 function addReceita() {
   const fonte = document.getElementById('r-fonte').value.trim();
   const valor = parseMoeda(document.getElementById('r-valor').value);
   const tipo = document.getElementById('r-tipo').value;
+  const dia = Math.min(31, Math.max(1, parseInt(document.getElementById('r-dia').value) || 5));
   if (!fonte || !valor || valor <= 0) { showToast('Informe a fonte e o valor'); return; }
   const mes = mesAtual();
   const { lista } = getReceitasMes(mes);
-  D.receitas[mes] = lista.map(r=>({...r})).concat([{ id: uid(), fonte, valor, tipo }]);
+  D.receitas[mes] = lista.map(r=>({...r})).concat([{ id: uid(), fonte, valor, tipo, dia }]);
   save(); renderConselho(); showToast('Receita adicionada');
+}
+function editarDiaReceita(id, v) {
+  const mes = mesAtual();
+  const { lista } = getReceitasMes(mes);
+  D.receitas[mes] = lista.map(r => ({ ...r, dia: r.id===id ? Math.min(31, Math.max(1, parseInt(v)||5)) : r.dia }));
+  save(); renderConselho(); showToast('Dia atualizado');
 }
 function removerReceita(id) {
   const mes = mesAtual();
@@ -2485,18 +3162,151 @@ function removerAporte(id) {
   save(); renderConselho(); showToast('Removido');
 }
 function salvarConfig() {
-  const num = (id, def) => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? def : v; };
+  const num = (id, def) => { const v = parseFloat(String(document.getElementById(id).value).replace(',','.')); return isNaN(v) ? def : v; };
   const meta = parseMoeda(document.getElementById('cfg-meta').value);
+  const res = parseMoeda(document.getElementById('cfg-reserva').value);
   D.config = {
+    ...D.config,
     meta: meta > 0 ? meta : CFG_PADRAO.meta,
     aportePct: num('cfg-aporte', CFG_PADRAO.aportePct),
     verdeSobra: num('cfg-verde', CFG_PADRAO.verdeSobra),
     amareloSobra: num('cfg-amarelo', CFG_PADRAO.amareloSobra),
     limParcelas: num('cfg-parc', CFG_PADRAO.limParcelas),
+    reservaMin: res >= 0 ? res : 0,
+    reservaMinMeses: num('cfg-resmin', CFG_PADRAO.reservaMinMeses),
+    reservaMetaMeses: num('cfg-resmeta', CFG_PADRAO.reservaMetaMeses),
+    rendInvest: num('cfg-rend', CFG_PADRAO.rendInvest),
+    diaReembolso: Math.min(31, Math.max(0, parseInt(document.getElementById('cfg-reemb').value)||0)),
   };
-  save(); renderConselho(); showToast('Limites salvos');
+  save(); renderConselho(); showToast('Ajustes salvos');
 }
-function resetarConfig() { D.config = { ...CFG_PADRAO }; save(); renderConselho(); showToast('Limites padrão'); }
+function resetarConfig() { D.config = { ...CFG_PADRAO }; save(); renderConselho(); showToast('Ajustes padrão'); }
+
+// ============================================================
+// LANÇAR PIX / DÉBITO (sai direto da conta, não passa por fatura)
+// ============================================================
+let lancarModo = 'cartao';
+function toggleLancarHTML() {
+  return `<div class="tabs" style="margin-bottom:14px">
+    <button class="tab ${lancarModo==='cartao'?'active':''}" onclick="setLancarModo('cartao')">💳 Cartão</button>
+    <button class="tab ${lancarModo==='avista'?'active':''}" onclick="setLancarModo('avista')">💵 Pix / Débito</button></div>${eventoBannerHTML(false)}`;
+}
+function setLancarModo(m) { lancarModo = m; editId = null; renderLancar(); }
+
+function renderLancarAvista() {
+  const catOpts = CATEGORIAS.map(g=>`<optgroup label="${g.group}">${g.items.map(i=>`<option value="${g.group} - ${i}">${i}</option>`).join('')}</optgroup>`).join('');
+  const titOpts = TITULARES.map(t=>`<option value="${t}">${t}</option>`).join('');
+  const lista = (D.avista||[]).slice().sort((a,b)=>(b.criadoEm||'').localeCompare(a.criadoEm||'')).slice(0,8);
+  const sim = simularCaixa();
+  const totalMes = avistaMes(mesAtual());
+  document.getElementById('page-lancar').innerHTML = `
+    <div class="sec-title">Novo gasto</div>
+    ${toggleLancarHTML()}
+    <div class="nota" style="margin:-4px 0 10px;font-size:13px">Pagamento que sai direto da conta, sem fatura. ${sim?`Saldo estimado agora: <strong>${R(sim.saldoHoje)}</strong>.`:'Informe o saldo na aba Conselho → Caixa para acompanhar o desconto.'}</div>
+    <div class="field-row">
+      <div><label class="field-label" style="margin-top:0">Data *</label><input type="date" id="av-data" value="${hoje()}"></div>
+      <div><label class="field-label" style="margin-top:0">Forma *</label><select id="av-forma"><option value="pix">Pix</option><option value="debito">Débito</option><option value="dinheiro">Dinheiro</option></select></div>
+    </div>
+    <label class="field-label">O que foi? *</label>
+    <input type="text" id="av-desc" placeholder="Ex: Doce das crianças, padaria, estacionamento...">
+    <div class="field-row">
+      <div><label class="field-label">Valor (R$) *</label><input type="text" inputmode="decimal" id="av-valor" placeholder="0,00" oninput="maskMoeda(this)"></div>
+      <div><label class="field-label">Quem</label><select id="av-tit">${titOpts}</select></div>
+    </div>
+    <label class="field-label">Categoria *</label>
+    <select id="av-cat">${catOpts}</select>
+    <label class="field-label">Evento / viagem (opcional)</label>
+    <input type="text" id="av-evento" list="dl-eventos" autocomplete="off" placeholder="Ex: Hotel feriado" value="${escH((getEventoAtivo()||{}).nome||'')}">
+    <datalist id="dl-eventos">${listaEventos().map(e=>`<option value="${escH(e)}">`).join('')}</datalist>
+    <button class="btn btn-primary" onclick="salvarAvista()">Registrar</button>
+    <div class="card" style="margin-top:18px"><div class="card-title">Últimos Pix/débito · ${R(totalMes)} no mês</div>
+      ${lista.length?lista.map(x=>`<div class="linha"><div style="min-width:0"><div style="font-size:14px;font-weight:600">${escH(x.desc)}</div><div style="font-size:12px;color:var(--text3)">${fmtD(x.data)} · ${x.forma==='pix'?'Pix':x.forma==='debito'?'Débito':'Dinheiro'} · ${escH(x.categoria.split(' - ').pop())}${x.evento?' · 🧳 '+escH(x.evento):''}</div></div>
+        <div style="display:flex;align-items:center;gap:8px"><strong>${R(x.valor)}</strong><button class="action-btn" onclick="removerAvista('${x.id}')">🗑️</button></div></div>`).join(''):'<div class="empty" style="padding:14px">Nenhum lançamento ainda.</div>'}
+    </div>`;
+}
+function salvarAvista() {
+  const data = document.getElementById('av-data').value;
+  const desc = document.getElementById('av-desc').value.trim();
+  const valor = parseMoeda(document.getElementById('av-valor').value);
+  if (!data || !desc || !valor || valor <= 0) { showToast('Preencha data, descrição e valor'); return; }
+  D.avista.push({ id: uid(), data, desc, valor, forma: document.getElementById('av-forma').value,
+    categoria: document.getElementById('av-cat').value, titular: document.getElementById('av-tit').value, evento: normalizarEvento(document.getElementById('av-evento').value), criadoEm: new Date().toISOString() });
+  save(); renderLancarAvista(); showToast('Registrado ✓');
+}
+function removerAvista(id) { D.avista = D.avista.filter(x=>x.id!==id); save(); renderLancarAvista(); showToast('Removido'); }
+
+
+// ============================================================
+// MODO EVENTO ATIVO: enquanto ligado, todo gasto novo (cartão ou Pix/débito) já entra no evento.
+// Fica salvo neste aparelho (cada pessoa liga o seu), com data de encerramento opcional.
+// ============================================================
+const KEY_EVENTO_ATIVO = KEY + '_evento_ativo';
+function getEventoAtivo() {
+  try {
+    const r = JSON.parse(localStorage.getItem(KEY_EVENTO_ATIVO) || 'null');
+    if (!r || !r.nome) return null;
+    if (r.ate && r.ate < hoje()) { localStorage.removeItem(KEY_EVENTO_ATIVO); return null; }
+    return r;
+  } catch(e) { return null; }
+}
+function totalDoEvento(nome) {
+  return itensGastos().filter(i => i.g.evento === nome).reduce((s,i) => s + Number(i.g.valor), 0);
+}
+function eventoBannerHTML(compacto) {
+  const ev = getEventoAtivo();
+  if (ev) {
+    const n = itensGastos().filter(i => i.g.evento === ev.nome).length;
+    return `<div class="ev-banner">
+      <div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;letter-spacing:.4px;text-transform:uppercase">🧳 Evento ativo</div>
+        <div style="font-size:16px;font-weight:700;margin:2px 0;word-break:break-word">${escH(ev.nome)}</div>
+        <div style="font-size:12px;opacity:.9">${n} lançamento(s) · ${R(totalDoEvento(ev.nome))}${ev.ate?` · até ${fmtD(ev.ate)}`:''}</div>
+        <div style="font-size:11px;opacity:.8;margin-top:2px">Gastos novos entram neste evento automaticamente.</div></div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="ev-btn" onclick="verEvento('${escH(ev.nome).replace(/'/g,'&#39;')}')">Ver</button>
+        <button class="ev-btn" onclick="encerrarEventoAtivo()">Encerrar</button></div>
+    </div>`;
+  }
+  if (compacto) return '';
+  const evs = listaEventos();
+  return `<div style="margin-bottom:12px">
+    <button class="filter-chip" style="width:100%;text-align:left;padding:10px 14px" onclick="document.getElementById('ev-ativar').style.display='block';this.style.display='none'">🧳 Ligar modo evento (viagem/passeio)</button>
+    <div id="ev-ativar" class="card" style="display:none;margin-top:8px">
+      <label class="field-label" style="margin-top:0">Nome do evento</label>
+      <input type="text" id="ev-ativar-nome" list="dl-eventos-ativar" autocomplete="off" placeholder="Ex: Passeio X - Out26">
+      <datalist id="dl-eventos-ativar">${evs.map(e=>`<option value="${escH(e)}">`).join('')}</datalist>
+      <label class="field-label">Encerrar automaticamente em (opcional)</label>
+      <input type="date" id="ev-ativar-ate">
+      <button class="btn btn-primary" style="margin-top:12px" onclick="ativarEvento()">Ligar</button>
+    </div></div>`;
+}
+function ativarEvento(nomeDireto) {
+  const nome = normalizarEvento(nomeDireto || document.getElementById('ev-ativar-nome').value);
+  const ateEl = document.getElementById('ev-ativar-ate');
+  const ate = !nomeDireto && ateEl ? ateEl.value : '';
+  if (!nome) { showToast('Dê um nome ao evento'); return; }
+  if (ate && ate < hoje()) { showToast('A data de encerramento já passou'); return; }
+  try { localStorage.setItem(KEY_EVENTO_ATIVO, JSON.stringify({ nome, ate: ate || null })); } catch(e) {}
+  showToast(`Evento "${nome}" ligado`);
+  atualizarTelaAtual();
+}
+function encerrarEventoAtivo() {
+  const ev = getEventoAtivo();
+  try { localStorage.removeItem(KEY_EVENTO_ATIVO); } catch(e) {}
+  showToast(ev ? `Evento encerrado · total ${R(totalDoEvento(ev.nome))}` : 'Evento encerrado');
+  atualizarTelaAtual();
+}
+function verEvento(nome) {
+  filtBusca = ''; filtDe = filtAte = ''; filtMes = ''; filtCartao = ''; filtCat = ''; filtEvento = nome;
+  gastosPageBuilt = false;
+  goPageById('gastos');
+}
+function atualizarTelaAtual() {
+  const ativa = document.querySelector('.page.active'); if (!ativa) return;
+  const id = ativa.id.replace('page-','');
+  if (id === 'home') renderHome();
+  else if (id === 'lancar') renderLancar();
+  else if (id === 'gastos') renderGastos();
+}
 
 // Confirm dialog
 let dlgCb=null;
